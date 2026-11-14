@@ -1,6 +1,31 @@
 import Foundation
 import SwiftUI
 
+enum AppLanguage: String, Codable, CaseIterable, Identifiable {
+    case zh = "zh"
+    case en = "en"
+
+    var id: String { rawValue }
+
+    var shortLabel: String {
+        switch self {
+        case .zh: return "中文"
+        case .en: return "EN"
+        }
+    }
+
+    var fullLabel: String {
+        switch self {
+        case .zh: return "简体中文"
+        case .en: return "English"
+        }
+    }
+
+    func tr(_ zh: String, _ en: String) -> String {
+        self == .zh ? zh : en
+    }
+}
+
 enum MediaCategory: String, Codable, CaseIterable, Identifiable {
     case game = "game"
     case novel = "novel"
@@ -8,11 +33,11 @@ enum MediaCategory: String, Codable, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var title: String {
+    func title(in lang: AppLanguage = .zh) -> String {
         switch self {
-        case .game: return "游戏"
-        case .novel: return "文字"
-        case .video: return "影像"
+        case .game: return lang.tr("游戏", "Games")
+        case .novel: return lang.tr("文字", "Texts")
+        case .video: return lang.tr("影像", "Videos")
         }
     }
 
@@ -32,22 +57,23 @@ enum MediaCategory: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    var subtagFieldTitle: String {
+    func subtagFieldTitle(in lang: AppLanguage) -> String {
         switch self {
-        case .game: return "游玩平台（可选）"
-        case .novel: return "文字体裁（可选）"
-        case .video: return "影像类型（可选）"
+        case .game: return lang.tr("游玩平台（可选）", "Platform (Optional)")
+        case .novel: return lang.tr("文字体裁（可选）", "Genre (Optional)")
+        case .video: return lang.tr("影像类型（可选）", "Format (Optional)")
         }
     }
 
-    var subtagShortLabel: String {
+    func subtagShortLabel(in lang: AppLanguage) -> String {
         switch self {
-        case .game: return "平台"
-        case .novel: return "体裁"
-        case .video: return "类型"
+        case .game: return lang.tr("平台", "Platform")
+        case .novel: return lang.tr("体裁", "Genre")
+        case .video: return lang.tr("类型", "Format")
         }
     }
 
+    /// Canonical storage values for preset tags (localized dynamically at display time)
     var presetTags: [String] {
         switch self {
         case .game:
@@ -59,22 +85,57 @@ enum MediaCategory: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    func statusLabel(for status: TrackingStatus) -> String {
+    private static let zhToEnSubtagMap: [String: String] = [
+        "移动端": "Mobile",
+        "小说": "Novel",
+        "非虚构": "Non-Fiction",
+        "社科": "Social Science",
+        "文学": "Literature",
+        "漫画": "Manga",
+        "轻小说": "Light Novel",
+        "科幻": "Sci-Fi",
+        "电影": "Movie",
+        "电视剧": "TV Series",
+        "番剧": "Anime",
+        "纪录片": "Documentary",
+        "动画电影": "Animated Film"
+    ]
+
+    private static let enToZhSubtagMap: [String: String] = {
+        var reversed: [String: String] = [:]
+        for (k, v) in zhToEnSubtagMap {
+            reversed[v.lowercased()] = k
+        }
+        return reversed
+    }()
+
+    static func localizedSubtag(_ rawTag: String, in lang: AppLanguage) -> String {
+        let trimmed = rawTag.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        switch lang {
+        case .zh:
+            return enToZhSubtagMap[trimmed.lowercased()] ?? trimmed
+        case .en:
+            return zhToEnSubtagMap[trimmed] ?? trimmed
+        }
+    }
+
+    func statusLabel(for status: TrackingStatus, in lang: AppLanguage = .zh) -> String {
         switch (self, status) {
-        case (.game, .active): return "正在玩"
-        case (.game, .completed): return "已玩过"
-        case (.game, .unfinished): return "未完成"
-        case (.game, .backlog): return "待玩"
+        case (.game, .active): return lang.tr("正在玩", "Playing")
+        case (.game, .completed): return lang.tr("已玩过", "Played")
+        case (.game, .unfinished): return lang.tr("未完成", "Unfinished")
+        case (.game, .backlog): return lang.tr("待玩", "Backlog")
 
-        case (.novel, .active): return "正在读"
-        case (.novel, .completed): return "已读完"
-        case (.novel, .unfinished): return "未完成"
-        case (.novel, .backlog): return "待读"
+        case (.novel, .active): return lang.tr("正在读", "Reading")
+        case (.novel, .completed): return lang.tr("已读完", "Finished")
+        case (.novel, .unfinished): return lang.tr("未完成", "Unfinished")
+        case (.novel, .backlog): return lang.tr("待读", "To Read")
 
-        case (.video, .active): return "正在看"
-        case (.video, .completed): return "已看完"
-        case (.video, .unfinished): return "未完成"
-        case (.video, .backlog): return "待看"
+        case (.video, .active): return lang.tr("正在看", "Watching")
+        case (.video, .completed): return lang.tr("已看完", "Watched")
+        case (.video, .unfinished): return lang.tr("未完成", "Unfinished")
+        case (.video, .backlog): return lang.tr("待看", "Watchlist")
         }
     }
 }
@@ -97,21 +158,12 @@ enum TrackingStatus: String, Codable, CaseIterable, Identifiable {
         [.active, .completed, .unfinished, .backlog]
     }
 
-    var genericTitle: String {
+    func genericTitle(in lang: AppLanguage = .zh) -> String {
         switch self {
-        case .active: return "进行中"
-        case .completed: return "已完成"
-        case .unfinished: return "未完成"
-        case .backlog: return "待开始"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .active: return "当前正在进行"
-        case .completed: return "已通关或已看完"
-        case .unfinished: return "曾开始但尚未完成"
-        case .backlog: return "计划体验但尚未开始"
+        case .active: return lang.tr("进行中", "In Progress")
+        case .completed: return lang.tr("已完成", "Completed")
+        case .unfinished: return lang.tr("未完成", "Unfinished")
+        case .backlog: return lang.tr("待开始", "Backlog")
         }
     }
 
@@ -133,11 +185,11 @@ enum TrackingStatus: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    func localizedTitle(in category: MediaCategory?) -> String {
+    func localizedTitle(in category: MediaCategory?, lang: AppLanguage = .zh) -> String {
         if let category {
-            return category.statusLabel(for: self)
+            return category.statusLabel(for: self, in: lang)
         }
-        return genericTitle
+        return genericTitle(in: lang)
     }
 }
 
@@ -147,12 +199,12 @@ enum SidebarDestination: Hashable {
     case status(TrackingStatus)
     case fiveStar
 
-    var title: String {
+    func title(in lang: AppLanguage = .zh) -> String {
         switch self {
-        case .all: return "全部"
-        case .category(let cat): return cat.title
-        case .status(let status): return status.genericTitle
-        case .fiveStar: return "五星作品"
+        case .all: return lang.tr("全部", "All")
+        case .category(let cat): return cat.title(in: lang)
+        case .status(let status): return status.genericTitle(in: lang)
+        case .fiveStar: return lang.tr("五星作品", "5-Star")
         }
     }
 
@@ -184,8 +236,13 @@ enum LibrarySortField: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var menuTitle: String {
-        "按\(rawValue)"
+    func menuTitle(in lang: AppLanguage) -> String {
+        switch self {
+        case .updatedAt: return lang.tr("按更新时间", "Date Updated")
+        case .createdAt: return lang.tr("按添加时间", "Date Added")
+        case .rating: return lang.tr("按个人评分", "Rating")
+        case .title: return lang.tr("按作品名称", "Title")
+        }
     }
 
     var defaultAscending: Bool {
@@ -195,19 +252,19 @@ enum LibrarySortField: String, CaseIterable, Identifiable {
         }
     }
 
-    var descendingLabel: String {
+    func descendingLabel(in lang: AppLanguage) -> String {
         switch self {
-        case .updatedAt, .createdAt: return "从新到旧"
-        case .rating: return "从高到低"
-        case .title: return "倒序（Z → A）"
+        case .updatedAt, .createdAt: return lang.tr("从新到旧", "Newest First")
+        case .rating: return lang.tr("从高到低", "Highest First")
+        case .title: return lang.tr("倒序（Z → A）", "Z → A")
         }
     }
 
-    var ascendingLabel: String {
+    func ascendingLabel(in lang: AppLanguage) -> String {
         switch self {
-        case .updatedAt, .createdAt: return "从旧到新"
-        case .rating: return "从低到高"
-        case .title: return "正序（A → Z）"
+        case .updatedAt, .createdAt: return lang.tr("从旧到新", "Oldest First")
+        case .rating: return lang.tr("从低到高", "Lowest First")
+        case .title: return lang.tr("正序（A → Z）", "A → Z")
         }
     }
 }
@@ -215,6 +272,7 @@ enum LibrarySortField: String, CaseIterable, Identifiable {
 struct MediaItem: Identifiable, Codable, Equatable, Hashable {
     var id: UUID
     var title: String
+    var titleEN: String
     var category: MediaCategory
     var status: TrackingStatus
     var subtag: String
@@ -229,6 +287,7 @@ struct MediaItem: Identifiable, Codable, Equatable, Hashable {
     init(
         id: UUID = UUID(),
         title: String,
+        titleEN: String = "",
         category: MediaCategory,
         status: TrackingStatus,
         subtag: String = "",
@@ -242,6 +301,7 @@ struct MediaItem: Identifiable, Codable, Equatable, Hashable {
     ) {
         self.id = id
         self.title = title
+        self.titleEN = titleEN
         self.category = category
         self.status = status
         self.subtag = subtag
@@ -252,5 +312,44 @@ struct MediaItem: Identifiable, Codable, Equatable, Hashable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.isSample = isSample
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, titleEN, category, status, subtag, rating, notes, coverFileName, paletteSeed, createdAt, updatedAt, isSample
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.title = try container.decode(String.self, forKey: .title)
+        self.titleEN = try container.decodeIfPresent(String.self, forKey: .titleEN) ?? ""
+        self.category = try container.decode(MediaCategory.self, forKey: .category)
+        self.status = try container.decode(TrackingStatus.self, forKey: .status)
+        self.subtag = try container.decodeIfPresent(String.self, forKey: .subtag) ?? ""
+        let rawRating = try container.decodeIfPresent(Int.self, forKey: .rating) ?? 0
+        self.rating = min(max(rawRating, 0), 5)
+        self.notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        self.coverFileName = try container.decodeIfPresent(String.self, forKey: .coverFileName)
+        self.paletteSeed = try container.decodeIfPresent(Int.self, forKey: .paletteSeed) ?? 0
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        self.isSample = try container.decodeIfPresent(Bool.self, forKey: .isSample) ?? false
+    }
+
+    /// Returns the localized title in the active language, seamlessly falling back if an official translation does not exist.
+    func displayTitle(in lang: AppLanguage) -> String {
+        let zh = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let en = titleEN.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch lang {
+        case .zh:
+            return zh.isEmpty ? en : zh
+        case .en:
+            return en.isEmpty ? zh : en
+        }
+    }
+
+    func quotedTitle(in lang: AppLanguage) -> String {
+        let name = displayTitle(in: lang)
+        return lang == .zh ? "《\(name)》" : "“\(name)”"
     }
 }

@@ -119,10 +119,10 @@ final class CoverManager {
         try? FileManager.default.removeItem(at: url)
     }
 
-    func chooseLocalImagePanel() -> URL? {
+    func chooseLocalImagePanel(lang: AppLanguage = .zh) -> URL? {
         let panel = NSOpenPanel()
-        panel.title = "选择海报封面图片"
-        panel.prompt = "设为封面"
+        panel.title = lang.tr("选择海报封面图片", "Choose Cover Image")
+        panel.prompt = lang.tr("设为封面", "Set Cover")
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
@@ -270,12 +270,22 @@ enum CoverError: LocalizedError {
     case invalidImageData
     case saveFailed
 
-    var errorDescription: String? {
+    func message(in lang: AppLanguage) -> String {
         switch self {
-        case .invalidURL: return "请输入有效的网络图片链接"
-        case .downloadFailed: return "无法下载该图片，请检查网络或尝试直接粘贴图片"
-        case .invalidImageData: return "未能识别为有效图片格式"
-        case .saveFailed: return "保存封面图片失败"
+        case .invalidURL:
+            return lang.tr("请输入有效的网络图片链接", "Please enter a valid image URL")
+        case .downloadFailed:
+            return lang.tr("无法下载该图片，请检查网络或尝试直接粘贴图片", "Failed to download image; please check the URL or paste directly")
+        case .invalidImageData:
+            return lang.tr("未能识别为有效图片格式", "Unrecognized image format")
+        case .saveFailed:
+            return lang.tr("保存封面图片失败", "Failed to save cover image")
         }
+    }
+
+    var errorDescription: String? {
+        let raw = UserDefaults.standard.string(forKey: "shelf.language") ?? "zh"
+        let lang = AppLanguage(rawValue: raw) ?? .zh
+        return message(in: lang)
     }
 }

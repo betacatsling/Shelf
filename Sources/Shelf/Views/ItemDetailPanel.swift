@@ -14,6 +14,8 @@ struct ItemDetailPanel: View {
     @State private var isDropTargeted = false
     @State private var showDeleteConfirm = false
 
+    private var lang: AppLanguage { store.language }
+
     private static let dateFormatter: DateFormatter = {
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd"
@@ -49,19 +51,21 @@ struct ItemDetailPanel: View {
             }
         }
         .confirmationDialog(
-            "确定要删除《\(item.title)》吗？",
+            lang.tr("确定要删除\(item.quotedTitle(in: lang))吗？", "Delete \(item.quotedTitle(in: lang))?"),
             isPresented: $showDeleteConfirm,
             titleVisibility: .visible
         ) {
-            Button("删除", role: .destructive) {
+            Button(lang.tr("删除", "Delete"), role: .destructive) {
                 store.deleteItem(id: item.id)
             }
-            Button("取消", role: .cancel) {}
+            Button(lang.tr("取消", "Cancel"), role: .cancel) {}
         }
     }
 
     private var heroHeader: some View {
-        ZStack(alignment: .topTrailing) {
+        let shownTitle = item.displayTitle(in: lang)
+
+        return ZStack(alignment: .topTrailing) {
             ZStack {
                 if let nsImg = CoverManager.shared.gridThumbnail(for: item.coverFileName) {
                     Image(nsImage: nsImg)
@@ -106,11 +110,12 @@ struct ItemDetailPanel: View {
                         .shadow(color: .black.opacity(0.30), radius: 12, x: 0, y: 6)
 
                     CoverArtworkView(
-                        title: item.title,
+                        title: shownTitle,
                         category: item.category,
                         subtag: item.subtag,
                         coverFileName: item.coverFileName,
                         paletteSeed: item.paletteSeed,
+                        language: lang,
                         cornerRadius: 12,
                         isHovered: isPosterHovered,
                         useThumbnail: false
@@ -123,18 +128,27 @@ struct ItemDetailPanel: View {
                             .frame(width: 132, height: 198)
                             .overlay(
                                 VStack(spacing: 7) {
-                                    posterOverlayButton(title: "更换封面", icon: "photo.on.rectangle.angled") {
+                                    posterOverlayButton(
+                                        title: lang.tr("更换封面", "Change Cover"),
+                                        icon: "photo.on.rectangle.angled"
+                                    ) {
                                         onReplaceCover()
                                     }
 
-                                    posterOverlayButton(title: "本地选图", icon: "folder") {
-                                        if let url = CoverManager.shared.chooseLocalImagePanel(),
+                                    posterOverlayButton(
+                                        title: lang.tr("本地选图", "Local Image"),
+                                        icon: "folder"
+                                    ) {
+                                        if let url = CoverManager.shared.chooseLocalImagePanel(lang: lang),
                                            let saved = CoverManager.shared.saveImageFromFileURL(url) {
                                             store.updateCover(for: item.id, newCoverFileName: saved)
                                         }
                                     }
 
-                                    posterOverlayButton(title: "粘贴图片", icon: "doc.on.clipboard") {
+                                    posterOverlayButton(
+                                        title: lang.tr("粘贴图片", "Paste Image"),
+                                        icon: "doc.on.clipboard"
+                                    ) {
                                         pasteCover()
                                     }
                                 }
@@ -151,13 +165,13 @@ struct ItemDetailPanel: View {
                 }
 
                 VStack(spacing: 8) {
-                    Text(item.title)
+                    Text(shownTitle)
                         .font(.system(size: 16.5, weight: .bold))
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 16)
 
                     HStack(spacing: 6) {
-                        Label(item.category.title, systemImage: item.category.systemImage)
+                        Label(item.category.title(in: lang), systemImage: item.category.systemImage)
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(item.category.accentColor)
                             .padding(.horizontal, 9)
@@ -165,7 +179,9 @@ struct ItemDetailPanel: View {
                             .background(item.category.accentColor.opacity(0.14), in: Capsule())
 
                         if !item.subtag.isEmpty {
-                            Text("\(item.category.subtagShortLabel)：\(item.subtag)")
+                            let shownTag = MediaCategory.localizedSubtag(item.subtag, in: lang)
+                            let prefix = item.category.subtagShortLabel(in: lang)
+                            Text(lang == .zh ? "\(prefix)：\(shownTag)" : "\(prefix): \(shownTag)")
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 9)
@@ -176,7 +192,7 @@ struct ItemDetailPanel: View {
 
                     HStack(spacing: 6) {
                         Button(action: onReplaceCover) {
-                            Label("更换封面…", systemImage: "photo.on.rectangle.angled")
+                            Label(lang.tr("更换封面…", "Change Cover…"), systemImage: "photo.on.rectangle.angled")
                                 .font(.system(size: 11.5, weight: .medium))
                         }
                         .buttonStyle(
@@ -189,12 +205,12 @@ struct ItemDetailPanel: View {
                         )
 
                         Button {
-                            if let url = CoverManager.shared.chooseLocalImagePanel(),
+                            if let url = CoverManager.shared.chooseLocalImagePanel(lang: lang),
                                let saved = CoverManager.shared.saveImageFromFileURL(url) {
                                 store.updateCover(for: item.id, newCoverFileName: saved)
                             }
                         } label: {
-                            Label("本地选图", systemImage: "folder")
+                            Label(lang.tr("本地选图", "Local Image"), systemImage: "folder")
                                 .font(.system(size: 11.5, weight: .medium))
                         }
                         .buttonStyle(
@@ -216,7 +232,7 @@ struct ItemDetailPanel: View {
                 systemName: "xmark",
                 size: 28,
                 iconSize: 11,
-                helpText: "收起详情栏",
+                helpText: lang.tr("收起详情栏", "Hide Details"),
                 action: onClose
             )
             .padding(12)
@@ -240,10 +256,9 @@ struct ItemDetailPanel: View {
         .buttonStyle(.plain)
     }
 
-    // 2x2 Status Grid so 4 statuses (including Unfinished & Backlist) have generous width
     private var statusSwitcherSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("状态")
+            Text(lang.tr("状态", "Status"))
                 .font(.system(size: 11.5, weight: .semibold))
                 .foregroundStyle(.secondary)
 
@@ -263,7 +278,7 @@ struct ItemDetailPanel: View {
                             Circle()
                                 .fill(isSelected ? Color.white : st.tintColor)
                                 .frame(width: 6.5, height: 6.5)
-                            Text(item.category.statusLabel(for: st))
+                            Text(item.category.statusLabel(for: st, in: lang))
                                 .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
                                 .lineLimit(1)
                         }
@@ -284,7 +299,7 @@ struct ItemDetailPanel: View {
 
     private var ratingSection: some View {
         HStack {
-            Text("评分")
+            Text(lang.tr("评分", "Rating"))
                 .font(.system(size: 11.5, weight: .semibold))
                 .foregroundStyle(.secondary)
 
@@ -301,7 +316,7 @@ struct ItemDetailPanel: View {
             )
 
             if item.rating > 0 {
-                Text("\(item.rating) 星")
+                Text(lang == .zh ? "\(item.rating) 星" : "\(item.rating)★")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .frame(width: 30, alignment: .trailing)
@@ -319,12 +334,12 @@ struct ItemDetailPanel: View {
     private var notesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label("备注与评价", systemImage: "square.and.pencil")
+                Label(lang.tr("备注与评价", "Notes & Review"), systemImage: "square.and.pencil")
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
                 if !draftNotes.isEmpty {
-                    Text("\(draftNotes.count) 字")
+                    Text(lang == .zh ? "\(draftNotes.count) 字" : "\(draftNotes.count) chars")
                         .font(.system(size: 10.5))
                         .foregroundStyle(.tertiary)
                 }
@@ -332,7 +347,7 @@ struct ItemDetailPanel: View {
 
             ZStack(alignment: .topLeading) {
                 if draftNotes.isEmpty {
-                    Text("写点评价或备注…")
+                    Text(lang.tr("写点评价或备注…", "Write notes or thoughts…"))
                         .font(.system(size: 13))
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 12)
@@ -365,12 +380,12 @@ struct ItemDetailPanel: View {
 
         return VStack(spacing: 12) {
             HStack {
-                Text("记录于 \(createdStr)")
+                Text(lang.tr("记录于 \(createdStr)", "Added \(createdStr)"))
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                 Spacer()
                 if updatedStr != createdStr {
-                    Text("更新于 \(updatedStr)")
+                    Text(lang.tr("更新于 \(updatedStr)", "Updated \(updatedStr)"))
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
                 }
@@ -378,7 +393,7 @@ struct ItemDetailPanel: View {
 
             HStack(spacing: 8) {
                 Button(action: onEditTapped) {
-                    Label("编辑信息", systemImage: "slider.horizontal.3")
+                    Label(lang.tr("编辑信息", "Edit Info"), systemImage: "slider.horizontal.3")
                         .font(.system(size: 12.5, weight: .semibold))
                 }
                 .buttonStyle(
@@ -406,7 +421,7 @@ struct ItemDetailPanel: View {
                         fullWidth: false
                     )
                 )
-                .help("删除")
+                .help(lang.tr("删除", "Delete"))
             }
         }
     }
@@ -431,7 +446,7 @@ struct ItemDetailPanel: View {
                 }
             }
         case .empty:
-            store.showToast("剪贴板中没有检测到图片或链接")
+            store.showToast(lang.tr("剪贴板中没有检测到图片或链接", "No image or link found in clipboard"))
         }
     }
 }

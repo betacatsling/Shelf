@@ -7,6 +7,7 @@ struct CoverArtworkView: View, Equatable {
     let subtag: String
     let coverFileName: String?
     let paletteSeed: Int
+    var language: AppLanguage = .zh
     var cornerRadius: CGFloat = 10
     var isHovered: Bool = false
     var useThumbnail: Bool = true
@@ -193,7 +194,7 @@ struct CoverArtworkView: View, Equatable {
                 HStack(spacing: 4) {
                     Image(systemName: category.systemImage)
                         .font(.system(size: 9, weight: .semibold))
-                    Text(subtag.isEmpty ? category.title : subtag)
+                    Text(subtag.isEmpty ? category.title(in: language) : MediaCategory.localizedSubtag(subtag, in: language))
                         .font(.system(size: 9.5, weight: .semibold, design: .rounded))
                         .lineLimit(1)
                 }
@@ -209,7 +210,7 @@ struct CoverArtworkView: View, Equatable {
                     .frame(width: 22, height: 1.5)
                     .padding(.bottom, 6)
 
-                Text(title.isEmpty ? "未命名作品" : title)
+                Text(title.isEmpty ? language.tr("未命名作品", "Untitled") : title)
                     .font(.system(size: 14.5, weight: .bold, design: category == .novel ? .serif : .default))
                     .foregroundStyle(Color.white.opacity(0.95))
                     .lineLimit(3)

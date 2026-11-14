@@ -10,6 +10,8 @@ struct MainWindowView: View {
     @State private var quickAddPresetStatus: TrackingStatus? = nil
     @State private var collapsedShelves: Set<TrackingStatus> = []
 
+    private var lang: AppLanguage { store.language }
+
     private var activeCategory: MediaCategory? {
         store.selectedDestination.activeCategory
     }
@@ -99,9 +101,13 @@ struct MainWindowView: View {
             }
             .background(Color(nsColor: .windowBackgroundColor))
             .animation(.snappy(duration: 0.20), value: store.selectedItemID != nil)
-            .navigationTitle(store.selectedDestination.title)
-            .navigationSubtitle("\(visibleItems.count) 项")
-            .searchable(text: $store.searchText, placement: .toolbar, prompt: "搜索名称、标签或备注…")
+            .navigationTitle(store.selectedDestination.title(in: lang))
+            .navigationSubtitle(itemCountText(visibleItems.count, compact: true))
+            .searchable(
+                text: $store.searchText,
+                placement: .toolbar,
+                prompt: lang.tr("搜索名称、标签或备注…", "Search titles, tags, or notes…")
+            )
             .toolbar {
                 toolbarContent
             }
@@ -110,27 +116,37 @@ struct MainWindowView: View {
             ItemEditorSheet(
                 existingItem: nil,
                 defaultCategory: defaultCategoryForNewItem,
-                defaultStatus: quickAddPresetStatus ?? defaultStatusForNewItem
+                defaultStatus: quickAddPresetStatus ?? defaultStatusForNewItem,
+                language: lang
             ) { newItem in
                 let created = store.addItem(newItem)
                 store.selectedItemID = created.id
             }
         }
         .sheet(item: $editingItem) { itemToEdit in
-            ItemEditorSheet(existingItem: itemToEdit) { updated in
+            ItemEditorSheet(existingItem: itemToEdit, language: lang) { updated in
                 store.updateItem(updated)
             }
         }
         .sheet(item: $coverReplacingItem) { itemForCover in
             CoverPickerSheet(
-                itemTitle: itemForCover.title,
+                itemTitle: itemForCover.displayTitle(in: lang),
                 category: itemForCover.category,
                 subtag: itemForCover.subtag,
                 initialCoverFileName: itemForCover.coverFileName,
-                paletteSeed: itemForCover.paletteSeed
+                paletteSeed: itemForCover.paletteSeed,
+                language: lang
             ) { newCoverFileName in
                 store.updateCover(for: itemForCover.id, newCoverFileName: newCoverFileName)
             }
+        }
+    }
+
+    private func itemCountText(_ count: Int, compact: Bool) -> String {
+        if lang == .zh {
+            return compact ? "\(count) 项" : "共 \(count) 项"
+        } else {
+            return count == 1 ? "1 item" : "\(count) items"
         }
     }
 
@@ -144,18 +160,18 @@ struct MainWindowView: View {
                     selection: $store.statusFilter,
                     verticalPadding: 5.5
                 )
-                .frame(maxWidth: 470)
+                .frame(maxWidth: 500)
             } else {
                 ShelfSegmentedControl(
                     segments: [
-                        .init(value: Optional<MediaCategory>.none, title: "全部")
+                        .init(value: Optional<MediaCategory>.none, title: lang.tr("全部", "All"))
                     ] + MediaCategory.allCases.map { cat in
-                        .init(value: Optional(cat), title: cat.title, icon: cat.systemImage)
+                        .init(value: Optional(cat), title: cat.title(in: lang), icon: cat.systemImage)
                     },
                     selection: $store.categoryFilter,
                     verticalPadding: 5.5
                 )
-                .frame(maxWidth: 360)
+                .frame(maxWidth: 380)
             }
 
             Spacer(minLength: 8)
@@ -163,6 +179,7 @@ struct MainWindowView: View {
             ShelfSortControl(
                 sortField: store.sortField,
                 sortAscending: store.sortAscending,
+                language: lang,
                 onSelectField: { field in
                     withAnimation(.snappy(duration: 0.18)) {
                         store.selectSortField(field)
@@ -182,7 +199,7 @@ struct MainWindowView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "plus")
                         .font(.system(size: 11.5, weight: .bold))
-                    Text("添加作品")
+                    Text(lang.tr("添加作品", "Add Item"))
                         .font(.system(size: 12.5, weight: .semibold))
                         .lineLimit(1)
                 }
@@ -196,7 +213,7 @@ struct MainWindowView: View {
                 )
             )
             .fixedSize()
-            .help("添加新作品 (⌘N)")
+            .help(lang.tr("添加新作品 (⌘N)", "Add new item (⌘N)"))
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 10)
@@ -205,13 +222,13 @@ struct MainWindowView: View {
 
     private var statusSegments: [ShelfSegmentedControl<StatusFilterOption>.Segment] {
         var list: [ShelfSegmentedControl<StatusFilterOption>.Segment] = [
-            .init(value: .allShelves, title: "分栏")
+            .init(value: .allShelves, title: lang.tr("分栏", "Shelves"))
         ]
         for st in TrackingStatus.filterOrder {
             list.append(
                 .init(
                     value: .single(st),
-                    title: st.localizedTitle(in: activeCategory),
+                    title: st.localizedTitle(in: activeCategory, lang: lang),
                     dotColor: st.tintColor
                 )
             )
@@ -222,7 +239,6 @@ struct MainWindowView: View {
     // MARK: - Library Canvas
 
     private func libraryCanvas(visibleItems: [MediaItem]) -> some View {
-        // Only show subtag filter bar when inside a single category (e.g. 长视频 -> 番剧/电视剧/电影, 游戏 -> Steam/Switch), never mixing across 全部
         let tags = activeCategory != nil ? store.availableSubtagsInCurrentView : []
         let isSearching = !store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
@@ -250,16 +266,19 @@ struct MainWindowView: View {
     private func subtagFilterBar(category: MediaCategory, tags: [String]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                Text("\(category.subtagShortLabel)：")
+                Text(lang == .zh ? "\(category.subtagShortLabel(in: lang))：" : "\(category.subtagShortLabel(in: lang)):")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
 
-                ShelfChipButton(title: "全部", isSelected: store.subtagFilter == nil) {
+                ShelfChipButton(title: lang.tr("全部", "All"), isSelected: store.subtagFilter == nil) {
                     store.subtagFilter = nil
                 }
 
                 ForEach(tags, id: \.self) { tag in
-                    ShelfChipButton(title: tag, isSelected: store.subtagFilter == tag) {
+                    ShelfChipButton(
+                        title: MediaCategory.localizedSubtag(tag, in: lang),
+                        isSelected: store.subtagFilter == tag
+                    ) {
                         store.subtagFilter = (store.subtagFilter == tag) ? nil : tag
                     }
                 }
@@ -277,10 +296,11 @@ struct MainWindowView: View {
             ForEach(TrackingStatus.shelfOrder) { status in
                 if let shelfItems = grouped[status], !shelfItems.isEmpty {
                     let isCollapsed = collapsedShelves.contains(status)
+                    let shelfLabel = status.localizedTitle(in: activeCategory, lang: lang)
                     VStack(alignment: .leading, spacing: 16) {
                         HStack(spacing: 10) {
                             ShelfHeaderToggleButton(
-                                title: status.localizedTitle(in: activeCategory),
+                                title: shelfLabel,
                                 count: shelfItems.count,
                                 dotColor: status.tintColor,
                                 isCollapsed: isCollapsed
@@ -302,7 +322,7 @@ struct MainWindowView: View {
                                 systemName: "plus",
                                 size: 24,
                                 iconSize: 11,
-                                helpText: "添加到「\(status.localizedTitle(in: activeCategory))」"
+                                helpText: lang.tr("添加到「\(shelfLabel)」", "Add to \(shelfLabel)")
                             ) {
                                 quickAddPresetStatus = status
                                 showAddSheet = true
@@ -353,14 +373,18 @@ struct MainWindowView: View {
                 .font(.system(size: 42, weight: .light))
                 .foregroundStyle(.secondary.opacity(0.7))
 
-            Text(store.searchText.isEmpty ? "暂无记录" : "没有找到匹配项")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.primary.opacity(0.85))
+            Text(
+                store.searchText.isEmpty
+                    ? lang.tr("暂无记录", "No Items Yet")
+                    : lang.tr("没有找到匹配项", "No Matching Items")
+            )
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(.primary.opacity(0.85))
 
             Text(
                 store.searchText.isEmpty
-                    ? "点击下方按钮或右上角「添加作品」开始记录。"
-                    : "试试换个关键词，或清除筛选条件。"
+                    ? lang.tr("点击下方按钮或右上角「添加作品」开始记录。", "Click below or “Add Item” in the top-right to start tracking.")
+                    : lang.tr("试试换个关键词，或清除筛选条件。", "Try another keyword or clear your active filters.")
             )
             .font(.system(size: 13))
             .foregroundStyle(.secondary)
@@ -373,7 +397,7 @@ struct MainWindowView: View {
                         quickAddPresetStatus = nil
                         showAddSheet = true
                     } label: {
-                        Label("添加作品", systemImage: "plus")
+                        Label(lang.tr("添加作品", "Add Item"), systemImage: "plus")
                             .font(.system(size: 13, weight: .semibold))
                     }
                     .buttonStyle(
@@ -389,7 +413,7 @@ struct MainWindowView: View {
                         Button {
                             store.restoreSampleItems()
                         } label: {
-                            Label("载入示例数据", systemImage: "sparkles")
+                            Label(lang.tr("载入示例数据", "Load Sample Data"), systemImage: "sparkles")
                                 .font(.system(size: 13, weight: .medium))
                         }
                         .buttonStyle(
@@ -404,7 +428,7 @@ struct MainWindowView: View {
                 }
                 .padding(.top, 6)
             } else {
-                Button("清除搜索") {
+                Button(lang.tr("清除搜索", "Clear Search")) {
                     store.searchText = ""
                 }
                 .buttonStyle(
@@ -424,7 +448,7 @@ struct MainWindowView: View {
 
     private func bottomStatusBar(visibleCount: Int) -> some View {
         HStack(spacing: 12) {
-            Text("共 \(visibleCount) 项")
+            Text(itemCountText(visibleCount, compact: false))
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
 
@@ -441,12 +465,12 @@ struct MainWindowView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("缩小海报 (⌘-)")
+                .help(lang.tr("缩小海报 (⌘-)", "Zoom out (⌘-)"))
 
                 Slider(value: $posterScale, in: 0.78...1.36)
                     .frame(width: 96)
                     .controlSize(.small)
-                    .help("拖动调整海报尺寸")
+                    .help(lang.tr("拖动调整海报尺寸", "Adjust poster size"))
 
                 Button {
                     posterScale = min(1.36, posterScale + 0.08)
@@ -458,7 +482,7 @@ struct MainWindowView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("放大海报 (⌘+)")
+                .help(lang.tr("放大海报 (⌘+)", "Zoom in (⌘+)"))
             }
         }
         .padding(.horizontal, 18)
@@ -477,9 +501,9 @@ struct MainWindowView: View {
                         store.selectedItemID = nil
                     }
                 } label: {
-                    Label("收起详情栏", systemImage: "sidebar.right")
+                    Label(lang.tr("收起详情栏", "Hide Details"), systemImage: "sidebar.right")
                 }
-                .help("收起右侧详情面板")
+                .help(lang.tr("收起右侧详情面板", "Hide right details panel"))
             }
         }
     }

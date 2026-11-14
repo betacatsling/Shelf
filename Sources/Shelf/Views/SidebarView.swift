@@ -3,14 +3,16 @@ import SwiftUI
 struct SidebarView: View {
     @EnvironmentObject private var store: LibraryStore
 
+    private var lang: AppLanguage { store.language }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 3) {
-                    sectionHeader("分类")
+                    sectionHeader(lang.tr("分类", "Library"))
 
                     SidebarRowButton(
-                        title: "全部",
+                        title: SidebarDestination.all.title(in: lang),
                         icon: "square.grid.2x2.fill",
                         tint: .accentColor,
                         count: store.count(for: .all),
@@ -22,7 +24,7 @@ struct SidebarView: View {
                     ForEach(MediaCategory.allCases) { category in
                         let dest: SidebarDestination = .category(category)
                         SidebarRowButton(
-                            title: category.title,
+                            title: category.title(in: lang),
                             icon: category.systemImage,
                             tint: category.accentColor,
                             count: store.count(for: dest),
@@ -34,12 +36,12 @@ struct SidebarView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 3) {
-                    sectionHeader("状态")
+                    sectionHeader(lang.tr("状态", "Status"))
 
                     ForEach(TrackingStatus.filterOrder) { status in
                         let dest: SidebarDestination = .status(status)
                         SidebarRowButton(
-                            title: status.genericTitle,
+                            title: status.genericTitle(in: lang),
                             icon: status.systemImage,
                             tint: status.tintColor,
                             count: store.count(for: dest),
@@ -50,7 +52,7 @@ struct SidebarView: View {
                     }
 
                     SidebarRowButton(
-                        title: "五星作品",
+                        title: SidebarDestination.fiveStar.title(in: lang),
                         icon: "star.fill",
                         tint: Color(red: 0.96, green: 0.72, blue: 0.18),
                         count: store.count(for: .fiveStar),
@@ -65,20 +67,20 @@ struct SidebarView: View {
             .padding(.bottom, 16)
         }
         .safeAreaInset(edge: .bottom) {
-            if store.hasSampleItems {
-                VStack(alignment: .leading, spacing: 8) {
-                    Divider()
-                        .opacity(0.5)
+            VStack(alignment: .leading, spacing: 8) {
+                Divider()
+                    .opacity(0.5)
 
+                if store.hasSampleItems {
                     HStack(spacing: 6) {
                         Image(systemName: "sparkles")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
-                        Text("包含示例数据")
+                        Text(lang.tr("包含示例数据", "Sample Data"))
                             .font(.system(size: 11.5))
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Button("清空示例") {
+                        Button(lang.tr("清空", "Clear")) {
                             store.clearSampleItems()
                         }
                         .buttonStyle(
@@ -92,8 +94,24 @@ struct SidebarView: View {
                         .font(.system(size: 11, weight: .medium))
                     }
                     .padding(.horizontal, 12)
-                    .padding(.bottom, 10)
                 }
+
+                HStack(spacing: 8) {
+                    Image(systemName: "globe")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+
+                    ShelfSegmentedControl(
+                        segments: [
+                            .init(value: AppLanguage.zh, title: "中文"),
+                            .init(value: AppLanguage.en, title: "English")
+                        ],
+                        selection: $store.language,
+                        verticalPadding: 4
+                    )
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
             }
         }
     }

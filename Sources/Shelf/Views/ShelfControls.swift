@@ -286,6 +286,7 @@ struct ShelfSegmentedControl<Option: Hashable>: View {
 struct ShelfSortControl: View {
     let sortField: LibrarySortField
     let sortAscending: Bool
+    var language: AppLanguage = .zh
     let onSelectField: (LibrarySortField) -> Void
     let onSetAscending: (Bool) -> Void
 
@@ -299,7 +300,7 @@ struct ShelfSortControl: View {
                 presentFlatNativeMenu()
             } label: {
                 HStack(spacing: 5) {
-                    Text(sortField.menuTitle)
+                    Text(sortField.menuTitle(in: language))
                         .font(.system(size: 12, weight: .medium))
                         .lineLimit(1)
 
@@ -365,7 +366,7 @@ struct ShelfSortControl: View {
 
         for field in LibrarySortField.allCases {
             let item = NSMenuItem(
-                title: field.menuTitle,
+                title: field.menuTitle(in: language),
                 action: #selector(SortMenuActionTarget.pickField(_:)),
                 keyEquivalent: ""
             )
@@ -379,8 +380,8 @@ struct ShelfSortControl: View {
 
         // Put the natural primary order first (e.g. A->Z first for title, newest/highest first for others)
         let options: [(title: String, asc: Bool)] = sortField == .title
-            ? [(sortField.ascendingLabel, true), (sortField.descendingLabel, false)]
-            : [(sortField.descendingLabel, false), (sortField.ascendingLabel, true)]
+            ? [(sortField.ascendingLabel(in: language), true), (sortField.descendingLabel(in: language), false)]
+            : [(sortField.descendingLabel(in: language), false), (sortField.ascendingLabel(in: language), true)]
 
         for opt in options {
             let item = NSMenuItem(

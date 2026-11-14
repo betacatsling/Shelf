@@ -14,7 +14,11 @@ struct PosterCardView: View {
     @State private var isHovered = false
     @State private var isDropTargeted = false
 
+    private var lang: AppLanguage { store.language }
+
     var body: some View {
+        let shownTitle = item.displayTitle(in: lang)
+
         Button {
             onSelect()
             if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
@@ -23,17 +27,17 @@ struct PosterCardView: View {
         } label: {
             VStack(alignment: .center, spacing: 8) {
                 ZStack(alignment: .topTrailing) {
-                    // Pre-shaped shadow backing (CoreAnimation caches shape shadow path — zero scroll blur overhead)
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color.black)
                         .shadow(color: Color.black.opacity(0.24), radius: 8, x: 0, y: 4)
 
                     CoverArtworkView(
-                        title: item.title,
+                        title: shownTitle,
                         category: item.category,
                         subtag: item.subtag,
                         coverFileName: item.coverFileName,
                         paletteSeed: item.paletteSeed,
+                        language: lang,
                         cornerRadius: 10,
                         isHovered: isHovered || isSelected,
                         useThumbnail: true
@@ -46,14 +50,13 @@ struct PosterCardView: View {
                             .allowsHitTesting(false)
                     }
 
-                    // Crisp lightweight status pill (avoids CABackdropLayer lag during fast scroll)
                     if isHovered || showStatusBadge {
                         HStack(spacing: 4) {
                             Circle()
                                 .fill(item.status.tintColor)
                                 .frame(width: 6, height: 6)
                             if isHovered {
-                                Text(item.category.statusLabel(for: item.status))
+                                Text(item.category.statusLabel(for: item.status, in: lang))
                                     .font(.system(size: 10, weight: .semibold))
                                     .foregroundStyle(.white)
                             }
@@ -80,7 +83,7 @@ struct PosterCardView: View {
                                 VStack(spacing: 5) {
                                     Image(systemName: "photo.badge.plus")
                                         .font(.system(size: 20, weight: .semibold))
-                                    Text("松开设为海报")
+                                    Text(lang.tr("松开设为海报", "Drop to Set Cover"))
                                         .font(.system(size: 11, weight: .semibold))
                                 }
                                 .foregroundStyle(.white)
@@ -94,9 +97,8 @@ struct PosterCardView: View {
                 .offset(y: isHovered ? -2 : 0)
                 .animation(.easeOut(duration: 0.16), value: isHovered)
 
-                // Clean Steam-Library-style label directly underneath the poster (Title + optional stars ONLY; never mix category & platform)
                 VStack(spacing: 3) {
-                    Text(item.title)
+                    Text(shownTitle)
                         .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
                         .foregroundStyle(isSelected ? Color.accentColor : Color.primary.opacity(0.92))
                         .lineLimit(1)
@@ -135,20 +137,20 @@ struct PosterCardView: View {
             }
         }
         .contextMenu {
-            Section("切换状态") {
+            Section(lang.tr("切换状态", "Status")) {
                 ForEach(TrackingStatus.filterOrder) { status in
                     Button {
                         store.updateStatus(for: item.id, to: status)
                     } label: {
                         Label(
-                            item.category.statusLabel(for: status),
+                            item.category.statusLabel(for: status, in: lang),
                             systemImage: item.status == status ? "checkmark.circle.fill" : status.systemImage
                         )
                     }
                 }
             }
 
-            Section("快速评分") {
+            Section(lang.tr("快速评分", "Quick Rating")) {
                 ForEach([5, 4, 3, 2, 1], id: \.self) { stars in
                     Button {
                         store.updateRating(for: item.id, rating: stars)
@@ -157,39 +159,39 @@ struct PosterCardView: View {
                     }
                 }
                 if item.rating > 0 {
-                    Button("清除评分") {
+                    Button(lang.tr("清除评分", "Clear Rating")) {
                         store.updateRating(for: item.id, rating: 0)
                     }
                 }
             }
 
-            Section("封面与编辑") {
+            Section(lang.tr("封面与编辑", "Cover & Edit")) {
                 Button {
                     onReplaceCover()
                 } label: {
-                    Label("更换封面…", systemImage: "photo.on.rectangle.angled")
+                    Label(lang.tr("更换封面…", "Change Cover…"), systemImage: "photo.on.rectangle.angled")
                 }
 
                 Button {
-                    if let url = CoverManager.shared.chooseLocalImagePanel(),
+                    if let url = CoverManager.shared.chooseLocalImagePanel(lang: lang),
                        let saved = CoverManager.shared.saveImageFromFileURL(url) {
                         store.updateCover(for: item.id, newCoverFileName: saved)
                     }
                 } label: {
-                    Label("选择本地图片…", systemImage: "folder")
+                    Label(lang.tr("选择本地图片…", "Choose Local Image…"), systemImage: "folder")
                 }
 
                 Button {
                     pasteCoverForItem()
                 } label: {
-                    Label("从剪贴板粘贴封面", systemImage: "doc.on.clipboard")
+                    Label(lang.tr("从剪贴板粘贴封面", "Paste Cover from Clipboard"), systemImage: "doc.on.clipboard")
                 }
 
                 if item.coverFileName != nil {
                     Button {
                         store.updateCover(for: item.id, newCoverFileName: nil)
                     } label: {
-                        Label("恢复默认封面", systemImage: "arrow.uturn.backward")
+                        Label(lang.tr("恢复默认封面", "Reset Default Cover"), systemImage: "arrow.uturn.backward")
                     }
                 }
 
@@ -199,13 +201,13 @@ struct PosterCardView: View {
                     onSelect()
                     onDoubleClickEdit()
                 } label: {
-                    Label("编辑作品信息…", systemImage: "slider.horizontal.3")
+                    Label(lang.tr("编辑作品信息…", "Edit Info…"), systemImage: "slider.horizontal.3")
                 }
 
                 Button(role: .destructive) {
                     store.deleteItem(id: item.id)
                 } label: {
-                    Label("删除", systemImage: "trash")
+                    Label(lang.tr("删除", "Delete"), systemImage: "trash")
                 }
             }
         }
@@ -231,7 +233,7 @@ struct PosterCardView: View {
                 }
             }
         case .empty:
-            store.showToast("剪贴板中没有检测到图片或图片链接")
+            store.showToast(lang.tr("剪贴板中没有检测到图片或图片链接", "No image or image URL found in clipboard"))
         }
     }
 }

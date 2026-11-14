@@ -8,6 +8,7 @@ struct CoverPickerSheet: View {
     let subtag: String
     let initialCoverFileName: String?
     let paletteSeed: Int
+    var language: AppLanguage = .zh
     let onCommitCover: (String?) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -71,11 +72,11 @@ struct CoverPickerSheet: View {
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
 
-            Text("更换封面")
+            Text(language.tr("更换封面", "Change Cover"))
                 .font(.system(size: 16, weight: .bold))
 
             if !itemTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("· 《\(itemTitle)》")
+                Text(language == .zh ? "· 《\(itemTitle)》" : "· \(itemTitle)")
                     .font(.system(size: 13.5, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -98,11 +99,12 @@ struct CoverPickerSheet: View {
                     .shadow(color: .black.opacity(0.28), radius: 12, x: 0, y: 6)
 
                 CoverArtworkView(
-                    title: itemTitle.isEmpty ? "封面预览" : itemTitle,
+                    title: itemTitle.isEmpty ? language.tr("封面预览", "Cover Preview") : itemTitle,
                     category: category,
                     subtag: subtag,
                     coverFileName: previewCoverFileName,
                     paletteSeed: paletteSeed,
+                    language: language,
                     cornerRadius: 12,
                     isHovered: isDropTargeted,
                     useThumbnail: false
@@ -118,7 +120,7 @@ struct CoverPickerSheet: View {
                                 .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
                         )
                         .overlay(
-                            Text("松开替换封面")
+                            Text(language.tr("松开替换封面", "Drop to Replace"))
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 10)
@@ -136,7 +138,7 @@ struct CoverPickerSheet: View {
                                 ProgressView()
                                     .controlSize(.regular)
                                     .tint(.white)
-                                Text("正在载入图片…")
+                                Text(language.tr("正在载入图片…", "Loading image…"))
                                     .font(.system(size: 11, weight: .medium))
                                     .foregroundStyle(.white.opacity(0.9))
                             }
@@ -148,16 +150,16 @@ struct CoverPickerSheet: View {
             VStack(spacing: 8) {
                 Button {
                     statusMessage = nil
-                    if let url = CoverManager.shared.chooseLocalImagePanel() {
+                    if let url = CoverManager.shared.chooseLocalImagePanel(lang: language) {
                         if let saved = CoverManager.shared.saveImageFromFileURL(url) {
                             selectedCandidateID = nil
                             stageTemporaryCover(saved)
                         } else {
-                            statusMessage = "无法读取所选本地图片"
+                            statusMessage = language.tr("无法读取所选本地图片", "Cannot read selected image")
                         }
                     }
                 } label: {
-                    Label("选择本地图片…", systemImage: "folder")
+                    Label(language.tr("选择本地图片…", "Choose Local Image…"), systemImage: "folder")
                         .font(.system(size: 12.5, weight: .medium))
                 }
                 .buttonStyle(
@@ -173,7 +175,7 @@ struct CoverPickerSheet: View {
                 Button {
                     pasteFromClipboard()
                 } label: {
-                    Label("从剪贴板粘贴", systemImage: "doc.on.clipboard")
+                    Label(language.tr("从剪贴板粘贴", "Paste from Clipboard"), systemImage: "doc.on.clipboard")
                         .font(.system(size: 12.5, weight: .medium))
                 }
                 .buttonStyle(
@@ -185,11 +187,9 @@ struct CoverPickerSheet: View {
                         fullWidth: true
                     )
                 )
-                .help("支持粘贴截图、网页复制的图片、本地图片文件或图片链接")
 
-                // Direct image link input
                 HStack(spacing: 6) {
-                    TextField("输入图片网络链接…", text: $remoteLinkInput)
+                    TextField(language.tr("输入图片网络链接…", "Enter image URL…"), text: $remoteLinkInput)
                         .textFieldStyle(.roundedBorder)
                         .controlSize(.small)
                         .font(.system(size: 11.5))
@@ -197,7 +197,7 @@ struct CoverPickerSheet: View {
                             loadFromLinkInput()
                         }
 
-                    Button("读取") {
+                    Button(language.tr("读取", "Load")) {
                         loadFromLinkInput()
                     }
                     .buttonStyle(
@@ -219,7 +219,7 @@ struct CoverPickerSheet: View {
                         previewCoverFileName = nil
                         statusMessage = nil
                     } label: {
-                        Label("恢复默认封面", systemImage: "arrow.uturn.backward")
+                        Label(language.tr("恢复默认封面", "Reset Default Cover"), systemImage: "arrow.uturn.backward")
                             .font(.system(size: 11.5, weight: .medium))
                     }
                     .buttonStyle(
@@ -263,7 +263,7 @@ struct CoverPickerSheet: View {
                         .font(.system(size: 12.5))
                         .foregroundStyle(.secondary)
 
-                    TextField("输入作品名称搜索海报…", text: $searchQuery)
+                    TextField(language.tr("输入作品名称搜索海报…", "Search posters by title…"), text: $searchQuery)
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
                         .onSubmit {
@@ -294,8 +294,8 @@ struct CoverPickerSheet: View {
 
                 ShelfSegmentedControl(
                     segments: [
-                        .init(value: false, title: category.title),
-                        .init(value: true, title: "全部")
+                        .init(value: false, title: category.title(in: language)),
+                        .init(value: true, title: language.tr("全部", "All"))
                     ],
                     selection: $searchAllCategories,
                     verticalPadding: 5
@@ -310,7 +310,7 @@ struct CoverPickerSheet: View {
                 Button {
                     triggerOnlineSearch()
                 } label: {
-                    Text("搜索")
+                    Text(language.tr("搜索", "Search"))
                         .font(.system(size: 12.5, weight: .semibold))
                 }
                 .buttonStyle(
@@ -331,7 +331,7 @@ struct CoverPickerSheet: View {
                 VStack(spacing: 10) {
                     ProgressView()
                         .controlSize(.regular)
-                    Text("正在搜索匹配的高清竖版封面…")
+                    Text(language.tr("正在搜索匹配的高清竖版封面…", "Searching for vertical posters…"))
                         .font(.system(size: 12.5))
                         .foregroundStyle(.secondary)
                 }
@@ -342,14 +342,24 @@ struct CoverPickerSheet: View {
                         .font(.system(size: 32, weight: .light))
                         .foregroundStyle(.secondary.opacity(0.7))
 
-                    Text(hasSearchedOnce ? "未找到匹配的在线封面" : "输入作品名即可在线搜索封面")
-                        .font(.system(size: 13.5, weight: .semibold))
-                        .foregroundStyle(.primary.opacity(0.85))
+                    Text(
+                        hasSearchedOnce
+                            ? language.tr("未找到匹配的在线封面", "No Matching Covers Found")
+                            : language.tr("输入作品名即可在线搜索封面", "Search Online Posters by Title")
+                    )
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(.primary.opacity(0.85))
 
                     Text(
                         hasSearchedOnce
-                            ? "可以尝试精简关键词（例如去掉副标题或版本号），或使用左侧本地选图、剪贴板粘贴。"
-                            : "单击候选图可在左侧预览裁剪效果，双击可直接应用。"
+                            ? language.tr(
+                                "可以尝试精简关键词（例如去掉副标题或版本号），或使用左侧本地选图、剪贴板粘贴。",
+                                "Try a shorter keyword without subtitles, or choose a local image / paste from clipboard."
+                            )
+                            : language.tr(
+                                "单击候选图可在左侧预览裁剪效果，双击可直接应用。",
+                                "Single-click a poster to preview; double-click to apply immediately."
+                            )
                     )
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
@@ -359,7 +369,7 @@ struct CoverPickerSheet: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 HStack(spacing: 6) {
-                    Text("候选封面（\(candidates.count)）")
+                    Text(language.tr("候选封面（\(candidates.count)）", "Candidates (\(candidates.count))"))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
                     if isSearching {
@@ -381,6 +391,7 @@ struct CoverPickerSheet: View {
                             CoverCandidateCard(
                                 candidate: candidate,
                                 isSelected: selectedCandidateID == candidate.id,
+                                language: language,
                                 onSelect: {
                                     let clickCount = NSApp.currentEvent?.clickCount ?? 1
                                     selectCandidate(candidate, applyImmediately: clickCount >= 2)
@@ -408,7 +419,7 @@ struct CoverPickerSheet: View {
 
             Spacer()
 
-            Button("取消") {
+            Button(language.tr("取消", "Cancel")) {
                 cleanupUncommittedFiles()
                 dismiss()
             }
@@ -423,7 +434,7 @@ struct CoverPickerSheet: View {
             .font(.system(size: 13, weight: .medium))
             .keyboardShortcut(.cancelAction)
 
-            Button("保存封面") {
+            Button(language.tr("保存封面", "Save Cover")) {
                 commitSelection()
             }
             .buttonStyle(
@@ -459,10 +470,12 @@ struct CoverPickerSheet: View {
         statusMessage = nil
 
         let targetCategory: MediaCategory? = searchAllCategories ? nil : category
+        let activeLang = language
         activeSearchTask = Task {
             await CoverSearchService.shared.searchCoversProgressively(
                 query: trimmed,
-                category: targetCategory
+                category: targetCategory,
+                language: activeLang
             ) { partial in
                 self.candidates = partial
             }
@@ -497,7 +510,7 @@ struct CoverPickerSheet: View {
             } catch {
                 await MainActor.run {
                     isLoadingPreview = false
-                    statusMessage = "下载该候选封面失败，请尝试其他封面"
+                    statusMessage = language.tr("下载该候选封面失败，请尝试其他封面", "Failed to download poster; please try another")
                 }
             }
         }
@@ -511,20 +524,20 @@ struct CoverPickerSheet: View {
                 selectedCandidateID = nil
                 stageTemporaryCover(saved)
             } else {
-                statusMessage = "保存剪贴板图片失败"
+                statusMessage = language.tr("保存剪贴板图片失败", "Failed to save clipboard image")
             }
         case .fileURL(let url):
             if let saved = CoverManager.shared.saveImageFromFileURL(url) {
                 selectedCandidateID = nil
                 stageTemporaryCover(saved)
             } else {
-                statusMessage = "无法读取剪贴板中的图片文件"
+                statusMessage = language.tr("无法读取剪贴板中的图片文件", "Cannot read image file from clipboard")
             }
         case .remoteURL(let urlStr):
             remoteLinkInput = urlStr
             loadFromLinkInput()
         case .empty:
-            statusMessage = "剪贴板中没有检测到图片或链接"
+            statusMessage = language.tr("剪贴板中没有检测到图片或链接", "No image or URL found in clipboard")
         }
     }
 
@@ -573,6 +586,7 @@ struct CoverPickerSheet: View {
 private struct CoverCandidateCard: View {
     let candidate: CoverCandidate
     let isSelected: Bool
+    var language: AppLanguage = .zh
     let onSelect: () -> Void
 
     @State private var loadedImage: NSImage? = nil
@@ -594,7 +608,7 @@ private struct CoverCandidateCard: View {
                                 VStack(spacing: 4) {
                                     Image(systemName: "photo")
                                         .font(.system(size: 18))
-                                    Text("预览不可用")
+                                    Text(language.tr("预览不可用", "Unavailable"))
                                         .font(.system(size: 10))
                                 }
                                 .foregroundStyle(.secondary)

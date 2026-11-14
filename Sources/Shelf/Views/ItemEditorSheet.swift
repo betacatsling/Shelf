@@ -6,11 +6,13 @@ struct ItemEditorSheet: View {
     let existingItem: MediaItem?
     let defaultCategory: MediaCategory
     let defaultStatus: TrackingStatus
+    let language: AppLanguage
     let onSave: (MediaItem) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
     @State private var title: String = ""
+    @State private var titleEN: String = ""
     @State private var category: MediaCategory = .game
     @State private var status: TrackingStatus = .active
     @State private var subtag: String = ""
@@ -26,26 +28,51 @@ struct ItemEditorSheet: View {
     @State private var showCoverPickerSheet = false
 
     @State private var temporaryCoverFiles: [String] = []
-    @FocusState private var isTitleFocused: Bool
+    @FocusState private var focusedField: FocusField?
+
+    private enum FocusField {
+        case zhTitle
+        case enTitle
+    }
 
     init(
         existingItem: MediaItem? = nil,
         defaultCategory: MediaCategory = .game,
         defaultStatus: TrackingStatus = .active,
+        language: AppLanguage = .zh,
         onSave: @escaping (MediaItem) -> Void
     ) {
         self.existingItem = existingItem
         self.defaultCategory = defaultCategory
         self.defaultStatus = defaultStatus
+        self.language = language
         self.onSave = onSave
+    }
+
+    private var hasValidTitle: Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !titleEN.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var previewDisplayTitle: String {
+        let zh = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let en = titleEN.trimmingCharacters(in: .whitespacesAndNewlines)
+        if language == .zh {
+            return !zh.isEmpty ? zh : (!en.isEmpty ? en : "海报预览")
+        } else {
+            return !en.isEmpty ? en : (!zh.isEmpty ? zh : "Poster Preview")
+        }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Sheet Header
             HStack {
-                Text(existingItem == nil ? "添加作品" : "编辑作品")
-                    .font(.system(size: 16, weight: .bold))
+                Text(
+                    existingItem == nil
+                        ? language.tr("添加作品", "Add Item")
+                        : language.tr("编辑作品", "Edit Item")
+                )
+                .font(.system(size: 16, weight: .bold))
                 Spacer()
             }
             .padding(.horizontal, 24)
@@ -54,7 +81,6 @@ struct ItemEditorSheet: View {
 
             Divider()
 
-            // Main Two-Column Form
             HStack(alignment: .top, spacing: 24) {
                 posterColumn
                     .frame(width: 192)
@@ -67,7 +93,6 @@ struct ItemEditorSheet: View {
 
             Divider()
 
-            // Footer Actions
             HStack(spacing: 10) {
                 if let coverErrorMessage {
                     Label(coverErrorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -77,7 +102,7 @@ struct ItemEditorSheet: View {
                 }
                 Spacer()
 
-                Button("取消") {
+                Button(language.tr("取消", "Cancel")) {
                     cleanupUncommittedCovers()
                     dismiss()
                 }
@@ -92,7 +117,11 @@ struct ItemEditorSheet: View {
                 .font(.system(size: 13, weight: .medium))
                 .keyboardShortcut(.cancelAction)
 
-                Button(existingItem == nil ? "添加" : "保存") {
+                Button(
+                    existingItem == nil
+                        ? language.tr("添加", "Add")
+                        : language.tr("保存", "Save")
+                ) {
                     commitSave()
                 }
                 .buttonStyle(
@@ -104,18 +133,19 @@ struct ItemEditorSheet: View {
                     )
                 )
                 .font(.system(size: 13, weight: .semibold))
-                .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isDownloadingCover)
+                .disabled(!hasValidTitle || isDownloadingCover)
                 .keyboardShortcut(.defaultAction)
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 14)
         }
-        .frame(width: 680)
+        .frame(width: 690)
         .fixedSize(horizontal: false, vertical: true)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             if let item = existingItem {
                 title = item.title
+                titleEN = item.titleEN
                 category = item.category
                 status = item.status
                 subtag = item.subtag
@@ -127,15 +157,21 @@ struct ItemEditorSheet: View {
                 category = defaultCategory
                 status = defaultStatus
             }
-            isTitleFocused = true
+            focusedField = (language == .en) ? .enTitle : .zhTitle
         }
         .sheet(isPresented: $showCoverPickerSheet) {
+            let queryTitle = {
+                let zh = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                let en = titleEN.trimmingCharacters(in: .whitespacesAndNewlines)
+                return language == .en ? (en.isEmpty ? zh : en) : (zh.isEmpty ? en : zh)
+            }()
             CoverPickerSheet(
-                itemTitle: title,
+                itemTitle: queryTitle,
                 category: category,
                 subtag: subtag,
                 initialCoverFileName: coverFileName,
-                paletteSeed: paletteSeed
+                paletteSeed: paletteSeed,
+                language: language
             ) { chosenCover in
                 if let chosenCover, chosenCover != coverFileName {
                     assignNewTemporaryCover(chosenCover)
@@ -157,11 +193,12 @@ struct ItemEditorSheet: View {
                     .shadow(color: .black.opacity(0.28), radius: 12, x: 0, y: 6)
 
                 CoverArtworkView(
-                    title: title.isEmpty ? "海报预览" : title,
+                    title: previewDisplayTitle,
                     category: category,
                     subtag: subtag,
                     coverFileName: coverFileName,
                     paletteSeed: paletteSeed,
+                    language: language,
                     cornerRadius: 12,
                     isHovered: isDropTargeted,
                     useThumbnail: false
@@ -177,7 +214,7 @@ struct ItemEditorSheet: View {
                                 .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
                         )
                         .overlay(
-                            Text("松开设为封面")
+                            Text(language.tr("松开设为封面", "Drop to Set Cover"))
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 10)
@@ -213,8 +250,11 @@ struct ItemEditorSheet: View {
                 coverErrorMessage = nil
                 showCoverPickerSheet = true
             } label: {
-                Label("在线搜索 / 更换封面…", systemImage: "magnifyingglass")
-                    .font(.system(size: 11.5, weight: .semibold))
+                Label(
+                    language.tr("在线搜索 / 更换封面…", "Search / Change Cover…"),
+                    systemImage: "magnifyingglass"
+                )
+                .font(.system(size: 11.5, weight: .semibold))
             }
             .buttonStyle(
                 ShelfButtonStyle(
@@ -226,18 +266,17 @@ struct ItemEditorSheet: View {
                 )
             )
 
-            // Cover Action Buttons (crisp visible borders & full hit target)
             HStack(spacing: 6) {
                 Button {
                     coverErrorMessage = nil
-                    if let url = CoverManager.shared.chooseLocalImagePanel(),
+                    if let url = CoverManager.shared.chooseLocalImagePanel(lang: language),
                        let saved = CoverManager.shared.saveImageFromFileURL(url) {
                         assignNewTemporaryCover(saved)
                     }
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "folder")
-                        Text("本地图片")
+                        Text(language.tr("本地图片", "Local"))
                             .lineLimit(1)
                     }
                     .font(.system(size: 11.5, weight: .medium))
@@ -257,7 +296,7 @@ struct ItemEditorSheet: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "doc.on.clipboard")
-                        Text("粘贴图片")
+                        Text(language.tr("粘贴图片", "Paste"))
                             .lineLimit(1)
                     }
                     .font(.system(size: 11.5, weight: .medium))
@@ -271,12 +310,10 @@ struct ItemEditorSheet: View {
                         fullWidth: true
                     )
                 )
-                .help("粘贴剪贴板中的截图、复制的网页图片或图片链接")
             }
 
-            // URL Input
             HStack(spacing: 5) {
-                TextField("粘贴图片网络链接…", text: $remoteURLInput)
+                TextField(language.tr("粘贴图片网络链接…", "Paste image URL…"), text: $remoteURLInput)
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.small)
                     .font(.system(size: 11))
@@ -285,7 +322,7 @@ struct ItemEditorSheet: View {
                     }
 
                 if !remoteURLInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button("加载") {
+                    Button(language.tr("加载", "Load")) {
                         fetchRemoteCover()
                     }
                     .buttonStyle(
@@ -305,7 +342,7 @@ struct ItemEditorSheet: View {
                 Button {
                     coverFileName = nil
                 } label: {
-                    Label("恢复默认封面", systemImage: "arrow.uturn.backward")
+                    Label(language.tr("恢复默认封面", "Reset Default Cover"), systemImage: "arrow.uturn.backward")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .buttonStyle(
@@ -320,7 +357,7 @@ struct ItemEditorSheet: View {
                 Button {
                     paletteSeed = Int.random(in: 0..<1000)
                 } label: {
-                    Label("换个封面配色", systemImage: "paintpalette")
+                    Label(language.tr("换个封面配色", "Shuffle Palette"), systemImage: "paintpalette")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .buttonStyle(
@@ -338,37 +375,50 @@ struct ItemEditorSheet: View {
     // MARK: - Right Form Column
 
     private var formColumn: some View {
-        VStack(alignment: .leading, spacing: 15) {
-            // 1. Title
-            VStack(alignment: .leading, spacing: 6) {
-                Text("作品名称")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 13) {
+            // 1. Bilingual Titles
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(language.tr("中文名称（无官中可填原名）", "Chinese Title"))
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
 
-                TextField("例如：艾尔登法环 / 诡秘之主 / 进击的巨人", text: $title)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 14))
-                    .focused($isTitleFocused)
+                    TextField(language.tr("例如：沉星之序 / 诡秘之主", "e.g. 沉星之序 / 诡秘之主"), text: $title)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 13.5))
+                        .focused($focusedField, equals: .zhTitle)
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(language.tr("英文名称（无官翻可留空）", "English Title (Optional)"))
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+
+                    TextField("e.g. Order of the Sinking Star", text: $titleEN)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 13.5))
+                        .focused($focusedField, equals: .enTitle)
+                }
             }
 
-            // 2. Category (Custom crisp segmented control!)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("所属类别")
+            // 2. Category
+            VStack(alignment: .leading, spacing: 5) {
+                Text(language.tr("所属类别", "Category"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
 
                 ShelfSegmentedControl(
                     segments: MediaCategory.allCases.map { cat in
-                        .init(value: cat, title: cat.title, icon: cat.systemImage)
+                        .init(value: cat, title: cat.title(in: language), icon: cat.systemImage)
                     },
                     selection: $category,
                     verticalPadding: 6
                 )
             }
 
-            // 3. Status (Custom crisp segmented control!)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("当前状态")
+            // 3. Status
+            VStack(alignment: .leading, spacing: 5) {
+                Text(language.tr("当前状态", "Status"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
 
@@ -376,7 +426,7 @@ struct ItemEditorSheet: View {
                     segments: TrackingStatus.filterOrder.map { st in
                         .init(
                             value: st,
-                            title: category.statusLabel(for: st),
+                            title: category.statusLabel(for: st, in: language),
                             dotColor: st.tintColor
                         )
                     },
@@ -386,13 +436,13 @@ struct ItemEditorSheet: View {
             }
 
             // 4. Optional Subtag
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text(category.subtagFieldTitle)
+                    Text(category.subtagFieldTitle(in: language))
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    TextField("自定义", text: $subtag)
+                    TextField(language.tr("自定义", "Custom"), text: $subtag)
                         .textFieldStyle(.roundedBorder)
                         .controlSize(.small)
                         .frame(width: 128)
@@ -400,7 +450,10 @@ struct ItemEditorSheet: View {
 
                 HStack(spacing: 6) {
                     ForEach(category.presetTags, id: \.self) { tag in
-                        ShelfChipButton(title: tag, isSelected: subtag == tag) {
+                        ShelfChipButton(
+                            title: MediaCategory.localizedSubtag(tag, in: language),
+                            isSelected: subtag == tag
+                        ) {
                             subtag = (subtag == tag) ? "" : tag
                         }
                     }
@@ -409,13 +462,13 @@ struct ItemEditorSheet: View {
 
             // 5. Rating
             HStack {
-                Text("个人评分")
+                Text(language.tr("个人评分", "Rating"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
                 StarRatingView(rating: $rating, starSize: 17, spacing: 5, interactive: true)
                 if rating > 0 {
-                    Button("清除") { rating = 0 }
+                    Button(language.tr("清除", "Clear")) { rating = 0 }
                         .buttonStyle(
                             ShelfButtonStyle(
                                 variant: .subtle,
@@ -430,14 +483,14 @@ struct ItemEditorSheet: View {
             }
 
             // 6. Notes
-            VStack(alignment: .leading, spacing: 6) {
-                Text("随笔与感想（可选）")
+            VStack(alignment: .leading, spacing: 5) {
+                Text(language.tr("随笔与感想（可选）", "Notes & Thoughts (Optional)"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
 
                 ZStack(alignment: .topLeading) {
                     if notes.isEmpty {
-                        Text("写点简短评价、期待理由或观后感…")
+                        Text(language.tr("写点简短评价、期待理由或观后感…", "Write a short review or notes…"))
                             .font(.system(size: 12.5))
                             .foregroundStyle(.tertiary)
                             .padding(.horizontal, 10)
@@ -479,13 +532,13 @@ struct ItemEditorSheet: View {
             if let saved = CoverManager.shared.saveImageFromFileURL(url) {
                 assignNewTemporaryCover(saved)
             } else {
-                coverErrorMessage = "无法读取该本地图片"
+                coverErrorMessage = language.tr("无法读取该本地图片", "Cannot read local image file")
             }
         case .remoteURL(let urlStr):
             remoteURLInput = urlStr
             fetchRemoteCover()
         case .empty:
-            coverErrorMessage = "剪贴板中没有检测到图片或图片链接"
+            coverErrorMessage = language.tr("剪贴板中没有检测到图片或图片链接", "No image or image URL in clipboard")
         }
     }
 
@@ -514,8 +567,13 @@ struct ItemEditorSheet: View {
     }
 
     private func commitSave() {
-        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanTitle.isEmpty else { return }
+        let cleanZH = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanEN = titleEN.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanZH.isEmpty || !cleanEN.isEmpty else { return }
+
+        // Ensure primary `title` is always populated so JSON remains clean even if only English was entered
+        let finalZH = cleanZH.isEmpty ? cleanEN : cleanZH
+        let finalEN = cleanEN
 
         for temp in temporaryCoverFiles where temp != coverFileName && temp != existingItem?.coverFileName {
             CoverManager.shared.removeCover(fileName: temp)
@@ -526,7 +584,8 @@ struct ItemEditorSheet: View {
 
         var result: MediaItem
         if var existing = existingItem {
-            existing.title = cleanTitle
+            existing.title = finalZH
+            existing.titleEN = finalEN
             existing.category = category
             existing.status = status
             existing.subtag = subtag.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -538,7 +597,8 @@ struct ItemEditorSheet: View {
             result = existing
         } else {
             result = MediaItem(
-                title: cleanTitle,
+                title: finalZH,
+                titleEN: finalEN,
                 category: category,
                 status: status,
                 subtag: subtag.trimmingCharacters(in: .whitespacesAndNewlines),

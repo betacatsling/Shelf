@@ -7,6 +7,11 @@ import UniformTypeIdentifiers
 @MainActor
 final class LibraryStore: ObservableObject {
     @Published private(set) var items: [MediaItem] = []
+    @Published var language: AppLanguage {
+        didSet {
+            UserDefaults.standard.set(language.rawValue, forKey: "shelf.language")
+        }
+    }
     @Published var selectedDestination: SidebarDestination = .all
     @Published var statusFilter: StatusFilterOption = .allShelves
     @Published var categoryFilter: MediaCategory? = nil
@@ -21,6 +26,9 @@ final class LibraryStore: ObservableObject {
     private var saveTask: Task<Void, Never>? = nil
 
     init() {
+        let savedLang = UserDefaults.standard.string(forKey: "shelf.language") ?? "zh"
+        self.language = AppLanguage(rawValue: savedLang) ?? .zh
+
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let baseDir = appSupport.appendingPathComponent("Shelf", isDirectory: true)
         try? FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
@@ -30,9 +38,16 @@ final class LibraryStore: ObservableObject {
     }
 
     /// In-memory initializer for UI previews/snapshots (never reads or writes user's disk data).
-    init(previewItems: [MediaItem]? = nil) {
+    init(previewItems: [MediaItem]? = nil, language: AppLanguage = .zh) {
+        self.language = language
         self.storageURL = nil
         self.items = previewItems ?? Self.makeStarterSamples()
+    }
+
+    func toggleLanguage() {
+        withAnimation(.snappy(duration: 0.16)) {
+            language = (language == .zh) ? .en : .zh
+        }
     }
 
     var selectedItem: MediaItem? {
@@ -131,11 +146,15 @@ final class LibraryStore: ObservableObject {
             }
 
             if !q.isEmpty {
-                let matchTitle = item.title.localizedCaseInsensitiveContains(q)
-                let matchTag = item.subtag.localizedCaseInsensitiveContains(q)
+                let matchTitleZH = item.title.localizedCaseInsensitiveContains(q)
+                let matchTitleEN = item.titleEN.localizedCaseInsensitiveContains(q)
+                let matchTagRaw = item.subtag.localizedCaseInsensitiveContains(q)
+                let matchTagEN = MediaCategory.localizedSubtag(item.subtag, in: .en).localizedCaseInsensitiveContains(q)
+                let matchTagZH = MediaCategory.localizedSubtag(item.subtag, in: .zh).localizedCaseInsensitiveContains(q)
                 let matchNotes = item.notes.localizedCaseInsensitiveContains(q)
-                let matchCat = item.category.title.localizedCaseInsensitiveContains(q)
-                if !(matchTitle || matchTag || matchNotes || matchCat) {
+                let matchCatZH = item.category.title(in: .zh).localizedCaseInsensitiveContains(q)
+                let matchCatEN = item.category.title(in: .en).localizedCaseInsensitiveContains(q)
+                if !(matchTitleZH || matchTitleEN || matchTagRaw || matchTagEN || matchTagZH || matchNotes || matchCatZH || matchCatEN) {
                     return false
                 }
             }
@@ -145,6 +164,7 @@ final class LibraryStore: ObservableObject {
     }
 
     private static let pinyinLocale = Locale(identifier: "zh-Hans-CN")
+    private static let englishLocale = Locale(identifier: "en_US")
 
     func selectSortField(_ field: LibrarySortField) {
         if sortField == field {
@@ -175,7 +195,6 @@ final class LibraryStore: ObservableObject {
 
         case .rating:
             return list.sorted {
-                // Always keep rated items (1...5) ahead of unrated (0) items regardless of direction
                 let lhsRated = $0.rating > 0
                 let rhsRated = $1.rating > 0
                 if lhsRated != rhsRated {
@@ -188,12 +207,16 @@ final class LibraryStore: ObservableObject {
             }
 
         case .title:
+            let activeLang = language
+            let collateLocale = (activeLang == .zh) ? Self.pinyinLocale : Self.englishLocale
             return list.sorted {
-                let cmp = $0.title.compare(
-                    $1.title,
+                let lhsName = $0.displayTitle(in: activeLang)
+                let rhsName = $1.displayTitle(in: activeLang)
+                let cmp = lhsName.compare(
+                    rhsName,
                     options: [.caseInsensitive, .numeric, .widthInsensitive],
                     range: nil,
-                    locale: Self.pinyinLocale
+                    locale: collateLocale
                 )
                 if cmp != .orderedSame {
                     return sortAscending ? (cmp == .orderedAscending) : (cmp == .orderedDescending)
@@ -212,7 +235,8 @@ final class LibraryStore: ObservableObject {
         newItem.updatedAt = Date()
         items.insert(newItem, at: 0)
         saveImmediately()
-        showToast("已添加《\(newItem.title)》")
+        let quoted = newItem.quotedTitle(in: language)
+        showToast(language.tr("已添加\(quoted)", "Added \(quoted)"))
         return newItem
     }
 
@@ -230,11 +254,12 @@ final class LibraryStore: ObservableObject {
         guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
         guard items[idx].status != status else { return }
         let cat = items[idx].category
-        let title = items[idx].title
         items[idx].status = status
         items[idx].updatedAt = Date()
         saveImmediately()
-        showToast("《\(title)》已移至「\(cat.statusLabel(for: status))」")
+        let quoted = items[idx].quotedTitle(in: language)
+        let stLabel = cat.statusLabel(for: status, in: language)
+        showToast(language.tr("\(quoted)已移至「\(stLabel)」", "Moved \(quoted) to \(stLabel)"))
     }
 
     func updateRating(for id: UUID, rating: Int) {
@@ -262,10 +287,11 @@ final class LibraryStore: ObservableObject {
         CoverManager.shared.removeCover(fileName: oldCover)
         items[idx].coverFileName = newCoverFileName
         saveImmediately()
+        let quoted = items[idx].quotedTitle(in: language)
         if newCoverFileName != nil {
-            showToast("已更换《\(items[idx].title)》的封面")
+            showToast(language.tr("已更换\(quoted)的封面", "Updated cover for \(quoted)"))
         } else {
-            showToast("已恢复《\(items[idx].title)》的默认封面")
+            showToast(language.tr("已恢复\(quoted)的默认封面", "Reset cover for \(quoted)"))
         }
     }
 
@@ -277,7 +303,8 @@ final class LibraryStore: ObservableObject {
             selectedItemID = nil
         }
         saveImmediately()
-        showToast("已删除《\(removed.title)》")
+        let quoted = removed.quotedTitle(in: language)
+        showToast(language.tr("已删除\(quoted)", "Deleted \(quoted)"))
     }
 
     func clearSampleItems() {
@@ -290,14 +317,14 @@ final class LibraryStore: ObservableObject {
         }
         items.removeAll(where: \.isSample)
         saveImmediately()
-        showToast("已清空示例数据")
+        showToast(language.tr("已清空示例数据", "Cleared sample data"))
     }
 
     func restoreSampleItems() {
         let samples = Self.makeStarterSamples()
         items.append(contentsOf: samples)
         saveImmediately()
-        showToast("已载入示例数据")
+        showToast(language.tr("已载入示例数据", "Loaded sample data"))
     }
 
     func showToast(_ message: String) {
@@ -360,8 +387,8 @@ final class LibraryStore: ObservableObject {
 
     func exportLibraryJSON() {
         let panel = NSSavePanel()
-        panel.title = "导出备份文件"
-        panel.nameFieldStringValue = "作品库备份.json"
+        panel.title = language.tr("导出备份文件", "Export Backup File")
+        panel.nameFieldStringValue = language.tr("作品库备份.json", "Shelf-Backup.json")
         panel.allowedContentTypes = [.json]
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
@@ -371,15 +398,15 @@ final class LibraryStore: ObservableObject {
             encoder.dateEncodingStrategy = .iso8601
             let data = try encoder.encode(items)
             try data.write(to: url, options: .atomic)
-            showToast("数据已导出")
+            showToast(language.tr("数据已导出", "Backup exported"))
         } catch {
-            showToast("导出失败：\(error.localizedDescription)")
+            showToast(language.tr("导出失败：\(error.localizedDescription)", "Export failed: \(error.localizedDescription)"))
         }
     }
 
     func importLibraryJSON() {
         let panel = NSOpenPanel()
-        panel.title = "导入备份文件"
+        panel.title = language.tr("导入备份文件", "Import Backup File")
         panel.allowedContentTypes = [.json]
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -397,9 +424,9 @@ final class LibraryStore: ObservableObject {
                 addedCount += 1
             }
             saveImmediately()
-            showToast("已成功导入 \(addedCount) 条记录")
+            showToast(language.tr("已成功导入 \(addedCount) 条记录", "Imported \(addedCount) items"))
         } catch {
-            showToast("导入失败：文件格式不兼容")
+            showToast(language.tr("导入失败：文件格式不兼容", "Import failed: incompatible file format"))
         }
     }
 
@@ -414,6 +441,7 @@ final class LibraryStore: ObservableObject {
         return [
             MediaItem(
                 title: "博德之门 3",
+                titleEN: "Baldur's Gate 3",
                 category: .game,
                 status: .active,
                 subtag: "Steam",
@@ -426,6 +454,7 @@ final class LibraryStore: ObservableObject {
             ),
             MediaItem(
                 title: "葬送的芙莉莲",
+                titleEN: "Frieren: Beyond Journey's End",
                 category: .video,
                 status: .active,
                 subtag: "番剧",
@@ -438,6 +467,7 @@ final class LibraryStore: ObservableObject {
             ),
             MediaItem(
                 title: "三体",
+                titleEN: "The Three-Body Problem",
                 category: .novel,
                 status: .completed,
                 subtag: "科幻",
@@ -450,6 +480,7 @@ final class LibraryStore: ObservableObject {
             ),
             MediaItem(
                 title: "塞尔达传说：旷野之息",
+                titleEN: "The Legend of Zelda: Breath of the Wild",
                 category: .game,
                 status: .completed,
                 subtag: "Switch",
@@ -462,6 +493,7 @@ final class LibraryStore: ObservableObject {
             ),
             MediaItem(
                 title: "星际穿越",
+                titleEN: "Interstellar",
                 category: .video,
                 status: .completed,
                 subtag: "电影",
@@ -474,6 +506,7 @@ final class LibraryStore: ObservableObject {
             ),
             MediaItem(
                 title: "极乐迪斯科",
+                titleEN: "Disco Elysium",
                 category: .game,
                 status: .backlog,
                 subtag: "Steam",
@@ -486,6 +519,7 @@ final class LibraryStore: ObservableObject {
             ),
             MediaItem(
                 title: "百年孤独",
+                titleEN: "One Hundred Years of Solitude",
                 category: .novel,
                 status: .backlog,
                 subtag: "文学",
@@ -498,6 +532,7 @@ final class LibraryStore: ObservableObject {
             ),
             MediaItem(
                 title: "人生切割术",
+                titleEN: "Severance",
                 category: .video,
                 status: .backlog,
                 subtag: "电视剧",

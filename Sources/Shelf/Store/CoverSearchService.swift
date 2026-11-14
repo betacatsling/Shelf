@@ -49,6 +49,7 @@ actor CoverSearchService {
     func searchCoversProgressively(
         query: String,
         category: MediaCategory?,
+        language: AppLanguage = .zh,
         onBatch: @escaping @MainActor ([CoverCandidate]) -> Void
     ) async {
         let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -61,34 +62,34 @@ actor CoverSearchService {
             switch category {
             case .game:
                 group.addTask {
-                    (0, await self.searchSteamVerticalPosters(keyword: keyword, maxCount: 6))
+                    (0, await self.searchSteamVerticalPosters(keyword: keyword, language: language, maxCount: 6))
                 }
                 group.addTask {
-                    (1, await self.searchBangumi(keyword: keyword, types: [4], sourceTag: "游戏封面", limit: 12))
+                    (1, await self.searchBangumi(keyword: keyword, types: [4], sourceTag: language.tr("游戏封面", "Game Cover"), language: language, limit: 12))
                 }
 
             case .novel:
                 group.addTask {
-                    (0, await self.searchBangumi(keyword: keyword, types: [1], sourceTag: "图书封面", limit: 14))
+                    (0, await self.searchBangumi(keyword: keyword, types: [1], sourceTag: language.tr("图书封面", "Book Cover"), language: language, limit: 14))
                 }
                 group.addTask {
-                    (1, await self.searchAppleMedia(keyword: keyword, media: "ebook", sourceTag: "电子书封面", limit: 8))
+                    (1, await self.searchAppleMedia(keyword: keyword, media: "ebook", sourceTag: language.tr("电子书封面", "eBook"), language: language, limit: 8))
                 }
 
             case .video:
                 group.addTask {
-                    (0, await self.searchBangumi(keyword: keyword, types: [2, 6], sourceTag: "影视海报", limit: 16))
+                    (0, await self.searchBangumi(keyword: keyword, types: [2, 6], sourceTag: language.tr("影视海报", "Poster"), language: language, limit: 16))
                 }
                 group.addTask {
-                    (1, await self.searchAppleMedia(keyword: keyword, media: "movie", sourceTag: "电影海报", limit: 6))
+                    (1, await self.searchAppleMedia(keyword: keyword, media: "movie", sourceTag: language.tr("电影海报", "Movie"), language: language, limit: 6))
                 }
 
             case nil:
                 group.addTask {
-                    (0, await self.searchSteamVerticalPosters(keyword: keyword, maxCount: 5))
+                    (0, await self.searchSteamVerticalPosters(keyword: keyword, language: language, maxCount: 5))
                 }
                 group.addTask {
-                    (1, await self.searchBangumi(keyword: keyword, types: [1, 2, 4, 6], sourceTag: "作品封面", limit: 14))
+                    (1, await self.searchBangumi(keyword: keyword, types: [1, 2, 4, 6], sourceTag: language.tr("作品封面", "Cover"), language: language, limit: 14))
                 }
             }
 
@@ -135,9 +136,11 @@ actor CoverSearchService {
         let response: ResponseBody?
     }
 
-    private func searchSteamVerticalPosters(keyword: String, maxCount: Int = 8) async -> [CoverCandidate] {
+    private func searchSteamVerticalPosters(keyword: String, language: AppLanguage, maxCount: Int = 8) async -> [CoverCandidate] {
+        let steamLang = (language == .zh) ? "schinese" : "english"
+        let steamCC = (language == .zh) ? "CN" : "US"
         guard let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://store.steampowered.com/api/storesearch/?term=\(encoded)&l=schinese&cc=CN")
+              let url = URL(string: "https://store.steampowered.com/api/storesearch/?term=\(encoded)&l=\(steamLang)&cc=\(steamCC)")
         else {
             return []
         }
@@ -158,7 +161,7 @@ actor CoverSearchService {
 
         let topItems = Array(rawItems.prefix(maxCount))
         let idsJSON = topItems.map { "{\"appid\":\($0.id)}" }.joined(separator: ",")
-        let inputJSON = "{\"ids\":[\(idsJSON)],\"context\":{\"language\":\"schinese\",\"country_code\":\"CN\"},\"data_request\":{\"include_assets\":true}}"
+        let inputJSON = "{\"ids\":[\(idsJSON)],\"context\":{\"language\":\"\(steamLang)\",\"country_code\":\"\(steamCC)\"},\"data_request\":{\"include_assets\":true}}"
 
         guard let browseEncoded = inputJSON.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
               let browseURL = URL(string: "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?input_json=\(browseEncoded)")
@@ -194,13 +197,13 @@ actor CoverSearchService {
             let basePrefix = "https://shared.akamai.steamstatic.com/store_item_assets/"
             let previewURL = basePrefix + fmt.replacingOccurrences(of: "${FILENAME}", with: pFile)
             let fullURL = basePrefix + fmt.replacingOccurrences(of: "${FILENAME}", with: fFile)
-            let title = si.name ?? nameFallback[appid] ?? "游戏封面"
+            let title = si.name ?? nameFallback[appid] ?? language.tr("游戏封面", "Game Cover")
 
             results.append(
                 CoverCandidate(
                     id: "steam-\(appid)",
                     title: title,
-                    sourceTag: "官方竖版海报",
+                    sourceTag: language.tr("官方竖版海报", "Official Poster"),
                     previewURL: previewURL,
                     fullURL: fullURL
                 )
@@ -234,7 +237,7 @@ actor CoverSearchService {
         let data: [Subject]?
     }
 
-    private func searchBangumi(keyword: String, types: [Int], sourceTag: String, limit: Int) async -> [CoverCandidate] {
+    private func searchBangumi(keyword: String, types: [Int], sourceTag: String, language: AppLanguage, limit: Int) async -> [CoverCandidate] {
         guard let url = URL(string: "https://api.bgm.tv/v0/search/subjects?limit=\(limit)") else {
             return []
         }
@@ -264,7 +267,12 @@ actor CoverSearchService {
             let preview = sub.images?.common ?? sub.images?.medium ?? large
             guard !large.isEmpty, large.hasPrefix("http") else { continue }
             let cn = (sub.name_cn ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            let displayTitle = cn.isEmpty ? sub.name : cn
+            let displayTitle: String
+            if language == .zh {
+                displayTitle = cn.isEmpty ? sub.name : cn
+            } else {
+                displayTitle = sub.name.isEmpty ? cn : sub.name
+            }
             results.append(
                 CoverCandidate(
                     id: "bgm-\(sub.id)",
@@ -289,9 +297,10 @@ actor CoverSearchService {
         let results: [Item]?
     }
 
-    private func searchAppleMedia(keyword: String, media: String, sourceTag: String, limit: Int) async -> [CoverCandidate] {
+    private func searchAppleMedia(keyword: String, media: String, sourceTag: String, language: AppLanguage, limit: Int) async -> [CoverCandidate] {
+        let country = (language == .zh) ? "CN" : "US"
         guard let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://itunes.apple.com/search?term=\(encoded)&country=CN&media=\(media)&limit=\(limit)")
+              let url = URL(string: "https://itunes.apple.com/search?term=\(encoded)&country=\(country)&media=\(media)&limit=\(limit)")
         else {
             return []
         }
