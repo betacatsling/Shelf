@@ -258,7 +258,7 @@ enum LibrarySortField: String, CaseIterable, Identifiable {
     }
 }
 
-struct MediaItem: Identifiable, Codable, Equatable, Hashable {
+struct MediaItem: Identifiable, Codable, Equatable, Hashable, Sendable {
     var id: UUID
     var title: String
     var titleEN: String
@@ -327,14 +327,10 @@ struct MediaItem: Identifiable, Codable, Equatable, Hashable {
 
     /// Returns the localized title in the active language, seamlessly falling back if an official translation does not exist.
     func displayTitle(in lang: AppLanguage) -> String {
-        let zh = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let en = titleEN.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch lang {
-        case .zh:
-            return zh.isEmpty ? en : zh
-        case .en:
-            return en.isEmpty ? zh : en
-        }
+        let preferred = (lang == .zh ? title : titleEN).trimmingCharacters(in: .whitespacesAndNewlines)
+        return preferred.isEmpty
+            ? (lang == .zh ? titleEN : title).trimmingCharacters(in: .whitespacesAndNewlines)
+            : preferred
     }
 
     func quotedTitle(in lang: AppLanguage) -> String {

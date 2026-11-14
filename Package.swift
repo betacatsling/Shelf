@@ -13,6 +13,10 @@ let package = Package(
         .executableTarget(
             name: "Shelf",
             path: "Sources/Shelf"
+        ),
+        .testTarget(
+            name: "ShelfTests",
+            dependencies: ["Shelf"]
         )
     ]
 )

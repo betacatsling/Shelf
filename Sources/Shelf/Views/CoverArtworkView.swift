@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-struct CoverArtworkView: View, Equatable {
+struct CoverArtworkView: View {
     let title: String
     let category: MediaCategory
     let subtag: String
@@ -10,7 +10,13 @@ struct CoverArtworkView: View, Equatable {
     var language: AppLanguage = .zh
     var cornerRadius: CGFloat = 10
     var isHovered: Bool = false
-    var useThumbnail: Bool = true
+    @State private var loadedCover: (name: String, image: CGImage)?
+
+    private var image: CGImage? {
+        guard let name = coverFileName, !name.isEmpty else { return nil }
+        if let loadedCover, loadedCover.name == name { return loadedCover.image }
+        return CoverManager.shared.cachedArtwork(for: .preview(name))?.image
+    }
 
     private struct Palette {
         let top: Color
@@ -71,7 +77,7 @@ struct CoverArtworkView: View, Equatable {
     ]
 
     private var palette: Palette {
-        let idx = abs(paletteSeed) % Self.palettes.count
+        let idx = Int(paletteSeed.magnitude % UInt(Self.palettes.count))
         return Self.palettes[idx]
     }
 
@@ -80,10 +86,8 @@ struct CoverArtworkView: View, Equatable {
             .aspectRatio(2.0 / 3.0, contentMode: .fit)
             .overlay {
                 staticCoverLayer
-                    .drawingGroup(opaque: true)
             }
             .overlay {
-                // Lightweight GPU-only hover sheen (never invalidates drawingGroup bitmap)
                 if isHovered {
                     LinearGradient(
                         colors: [
@@ -106,17 +110,21 @@ struct CoverArtworkView: View, Equatable {
                     )
                     .allowsHitTesting(false)
             )
+            .task(id: coverFileName) {
+                guard let name = coverFileName, !name.isEmpty else {
+                    loadedCover = nil
+                    return
+                }
+                let image = await CoverManager.shared.artwork(for: .preview(name))?.image
+                guard !Task.isCancelled else { return }
+                loadedCover = image.map { (name, $0) }
+            }
     }
 
-    @ViewBuilder
     private var staticCoverLayer: some View {
-        let resolvedImage = useThumbnail
-            ? CoverManager.shared.gridThumbnail(for: coverFileName)
-            : CoverManager.shared.image(for: coverFileName)
-
         ZStack {
-            if let nsImage = resolvedImage {
-                Image(nsImage: nsImage)
+            if let image {
+                Image(decorative: image, scale: 2)
                     .resizable()
                     .scaledToFill()
             } else {

@@ -12,37 +12,85 @@ struct CoverCandidate: Identifiable, Hashable, Sendable {
 actor CoverSearchService {
     static let shared = CoverSearchService()
 
-    private let previewCache = NSCache<NSString, NSImage>()
+    private struct PreviewLoad {
+        let id: UUID
+        let task: Task<Void, Never>
+        var waiters: [UUID: CheckedContinuation<CGImage?, Never>]
+    }
+
+    private final class Preview: NSObject {
+        let image: CGImage
+        init(_ image: CGImage) { self.image = image }
+    }
+
+    private let previewCache = NSCache<NSString, Preview>()
+    private var previewLoads: [String: PreviewLoad] = [:]
+    private let previewSession: URLSession
+    private let previewDecoder = DispatchQueue(label: "shelf.online-preview-decode", qos: .userInitiated)
 
     private init() {
-        previewCache.countLimit = 120
+        previewCache.countLimit = 100
+        previewCache.totalCostLimit = 16 * 1024 * 1024
+        let config = URLSessionConfiguration.ephemeral
+        config.httpMaximumConnectionsPerHost = 4
+        config.urlCache = URLCache(memoryCapacity: 8 * 1024 * 1024, diskCapacity: 0)
+        previewSession = URLSession(configuration: config)
     }
 
-    func cachedPreview(for urlString: String) -> NSImage? {
-        previewCache.object(forKey: urlString as NSString)
-    }
+    func loadPreviewImage(from urlString: String) async -> CGImage? {
+        if let cached = previewCache.object(forKey: urlString as NSString) { return cached.image }
+        guard let url = URL(string: urlString), let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https", !Task.isCancelled else { return nil }
 
-    func loadPreviewImage(from urlString: String) async -> NSImage? {
-        if let cached = previewCache.object(forKey: urlString as NSString) {
-            return cached
-        }
-        guard let url = URL(string: urlString) else { return nil }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 10
-        req.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-            forHTTPHeaderField: "User-Agent"
-        )
-        do {
-            let (data, resp) = try await URLSession.shared.data(for: req)
-            if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                return nil
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: nil)
+                } else if previewLoads[urlString] != nil {
+                    previewLoads[urlString]?.waiters[id] = continuation
+                } else {
+                    let generation = UUID()
+                    let task = Task {
+                        let image = await downloadPreview(url)
+                        finishPreview(urlString, generation: generation, image: image)
+                    }
+                    previewLoads[urlString] = PreviewLoad(id: generation, task: task, waiters: [id: continuation])
+                }
             }
-            guard let image = NSImage(data: data) else { return nil }
-            previewCache.setObject(image, forKey: urlString as NSString)
-            return image
-        } catch {
-            return nil
+        } onCancel: {
+            Task { await self.cancelPreview(urlString, waiter: id) }
+        }
+    }
+
+    private func cancelPreview(_ urlString: String, waiter id: UUID) {
+        guard let waiter = previewLoads[urlString]?.waiters.removeValue(forKey: id) else { return }
+        waiter.resume(returning: nil)
+        if previewLoads[urlString]?.waiters.isEmpty == true {
+            previewLoads.removeValue(forKey: urlString)?.task.cancel()
+        }
+    }
+
+    private func finishPreview(_ urlString: String, generation: UUID, image: CGImage?) {
+        guard let load = previewLoads[urlString], load.id == generation else { return }
+        previewLoads.removeValue(forKey: urlString)
+        if let image {
+            previewCache.setObject(Preview(image), forKey: urlString as NSString, cost: image.bytesPerRow * image.height)
+        }
+        for waiter in load.waiters.values { waiter.resume(returning: image) }
+    }
+
+    private func downloadPreview(_ url: URL) async -> CGImage? {
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 Safari/605.1.15",
+                         forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await previewSession.data(for: request),
+              let response = response as? HTTPURLResponse, (200...299).contains(response.statusCode),
+              !Task.isCancelled else { return nil }
+        return await withCheckedContinuation { continuation in
+            previewDecoder.async {
+                continuation.resume(returning: CoverImageIO.decode(data: data, maxPixel: 340))
+            }
         }
     }
 
@@ -94,18 +142,18 @@ actor CoverSearchService {
             }
 
             var buckets: [Int: [CoverCandidate]] = [:]
+            var lastBatch: [CoverCandidate]?
             for await (priority, list) in group {
                 guard !Task.isCancelled else { return }
                 buckets[priority] = list
                 let ordered = buckets.keys.sorted().flatMap { buckets[$0] ?? [] }
                 let merged = deduplicate(ordered)
-                if !merged.isEmpty {
+                if !merged.isEmpty, merged != lastBatch {
+                    lastBatch = merged
                     await onBatch(merged)
                 }
             }
-
-            let finalOrdered = buckets.keys.sorted().flatMap { buckets[$0] ?? [] }
-            await onBatch(deduplicate(finalOrdered))
+            if !Task.isCancelled, lastBatch == nil { await onBatch([]) }
         }
     }
 
@@ -182,7 +230,7 @@ actor CoverSearchService {
             return []
         }
 
-        let nameFallback = Dictionary(uniqueKeysWithValues: topItems.map { ($0.id, $0.name) })
+        let nameFallback = Dictionary(topItems.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
         var results: [CoverCandidate] = []
         for si in storeItems {
             guard let appid = si.appid,

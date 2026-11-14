@@ -1,66 +1,109 @@
 import AppKit
-import Combine
 import Foundation
+import Observation
 import SwiftUI
 import UniformTypeIdentifiers
 
 @MainActor
-final class LibraryStore: ObservableObject {
-    @Published private(set) var items: [MediaItem] = [] {
-        didSet { invalidateFilterCache() }
+@Observable
+final class LibraryStore {
+    var language: AppLanguage {
+        didSet { UserDefaults.standard.set(language.rawValue, forKey: "shelf.language") }
     }
-    @Published var language: AppLanguage {
-        didSet {
-            UserDefaults.standard.set(language.rawValue, forKey: "shelf.language")
-            invalidateFilterCache()
+    var selectedDestination: SidebarDestination = .all
+    var statusFilter: StatusFilterOption = .allShelves
+    var subtagFilter: String?
+    var sortField: LibrarySortField = .updatedAt
+    var sortAscending = false
+    var searchText = ""
+    var selectedItemID: UUID? {
+        didSet { refreshSelectedItem() }
+    }
+    private(set) var selectedItem: MediaItem?
+    private(set) var toastMessage: String?
+    private(set) var isLoading = false
+    private(set) var loadFailed = false
+
+    private struct Counts: Equatable {
+        var total = 0
+        var categories: [MediaCategory: Int] = [:]
+        var fiveStar = 0
+        var samples = 0
+
+        mutating func include(_ item: MediaItem, delta: Int) {
+            total += delta
+            categories[item.category, default: 0] += delta
+            if item.rating == 5 { fiveStar += delta }
+            if item.isSample { samples += delta }
         }
     }
-    @Published var selectedDestination: SidebarDestination = .all {
-        didSet { invalidateFilterCache() }
-    }
-    @Published var statusFilter: StatusFilterOption = .allShelves {
-        didSet { invalidateFilterCache() }
-    }
-    @Published var subtagFilter: String? = nil {
-        didSet { invalidateFilterCache() }
-    }
-    @Published var sortField: LibrarySortField = .updatedAt {
-        didSet { invalidateFilterCache() }
-    }
-    @Published var sortAscending: Bool = false {
-        didSet { invalidateFilterCache() }
-    }
-    @Published var searchText: String = "" {
-        didSet { invalidateFilterCache() }
-    }
-    @Published var selectedItemID: UUID? = nil
-    @Published var toastMessage: String? = nil
 
-    private let storageURL: URL?
-    private var saveTask: Task<Void, Never>? = nil
-    private var cachedDefaultFilteredItems: [MediaItem]? = nil
+    private var counts = Counts()
+    private var catalogRevision: UInt64 = 0
+    private var sortRevision: UInt64 = 0
+    private var notesRevision: UInt64 = 0
 
-    private func invalidateFilterCache() {
-        cachedDefaultFilteredItems = nil
-    }
+    @ObservationIgnored private var records: [MediaItem] = []
+    @ObservationIgnored private var indices: [UUID: Int] = [:]
+    @ObservationIgnored private var coverReferences: [String: Int] = [:]
+    @ObservationIgnored private var query = LibraryQuery()
+    private let queryWorker = LibraryQuery.Worker()
+    @ObservationIgnored private var toastTask: Task<Void, Never>?
+    @ObservationIgnored private var saveTask: Task<Void, Never>?
+    @ObservationIgnored private var dirtySince: ContinuousClock.Instant?
+    @ObservationIgnored private var revision: UInt64 = 0
+    @ObservationIgnored private var savedRevision: UInt64 = 0
+    @ObservationIgnored private var writing = false
+    @ObservationIgnored private var coversToRemove: [String: UInt64] = [:]
+    @ObservationIgnored private var coverImports: [UUID: Task<Void, Never>] = [:]
 
-    init() {
-        let savedLang = UserDefaults.standard.string(forKey: "shelf.language") ?? "zh"
-        self.language = AppLanguage(rawValue: savedLang) ?? .zh
+    private let libraryFile: LibraryFile?
 
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let baseDir = appSupport.appendingPathComponent("Shelf", isDirectory: true)
-        try? FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
-        self.storageURL = baseDir.appendingPathComponent("library.json")
-
-        load()
+    convenience init() {
+        let savedLang = UserDefaults.standard.string(forKey: "shelf.language").flatMap(AppLanguage.init(rawValue:)) ?? .zh
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        self.init(storageURL: support.appendingPathComponent("Shelf/library.json"), language: savedLang)
     }
 
-    /// In-memory initializer for UI previews/snapshots (never reads or writes user's disk data).
-    init(previewItems: [MediaItem]? = nil, language: AppLanguage = .zh) {
+    init(storageURL: URL, language: AppLanguage) {
         self.language = language
-        self.storageURL = nil
-        self.items = previewItems ?? Self.makeStarterSamples()
+        let file = LibraryFile(url: storageURL)
+        libraryFile = file
+        isLoading = true
+        Task { [weak self] in
+            do {
+                let items = try await file.load()
+                guard let self else { return }
+                replaceRecords(with: items ?? Self.makeStarterSamples())
+                isLoading = false
+                if items == nil { scheduleSave() }
+            } catch {
+                guard let self else { return }
+                print("Failed to read library.json: \(error)")
+                loadFailed = true
+                isLoading = false
+            }
+        }
+    }
+
+    /// An in-memory library for previews and tests.
+    init(previewItems: [MediaItem], language: AppLanguage = .zh) {
+        self.language = language
+        libraryFile = nil
+        replaceRecords(with: previewItems)
+    }
+
+    var isReady: Bool { !isLoading && !loadFailed }
+    var isEmpty: Bool { counts.total == 0 }
+    var hasSampleItems: Bool { counts.samples > 0 }
+
+    func item(withID id: UUID) -> MediaItem? {
+        indices[id].map { records[$0] }
+    }
+
+    private func refreshSelectedItem() {
+        let item = selectedItemID.flatMap(item(withID:))
+        if selectedItem != item { selectedItem = item }
     }
 
     func toggleLanguage() {
@@ -69,128 +112,48 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    var selectedItem: MediaItem? {
-        guard let selectedItemID else { return nil }
-        return items.first(where: { $0.id == selectedItemID })
-    }
-
-    var hasSampleItems: Bool {
-        items.contains(where: \.isSample)
-    }
-
     func selectDestination(_ destination: SidebarDestination) {
         selectedDestination = destination
         statusFilter = .allShelves
         subtagFilter = nil
-        if let currentID = selectedItemID {
-            let stillVisible = filteredItems().contains(where: { $0.id == currentID })
-            if !stillVisible {
-                selectedItemID = nil
-            }
+        if let item = selectedItem,
+           !destination.includes(item) || !LibraryQuery.matches(item, text: trimmedSearchText) {
+            selectedItemID = nil
         }
     }
-
-    // MARK: - Counts
 
     func count(for destination: SidebarDestination) -> Int {
         switch destination {
-        case .all:
-            return items.count
-        case .category(let cat):
-            return items.reduce(0) { $0 + ($1.category == cat ? 1 : 0) }
-        case .fiveStar:
-            return items.reduce(0) { $0 + ($1.rating == 5 ? 1 : 0) }
+        case .all: return counts.total
+        case .category(let category): return counts.categories[category, default: 0]
+        case .fiveStar: return counts.fiveStar
         }
     }
 
-    /// Returns item counts per tracking status within the active sidebar scope, subtag filter, and search query.
-    func statusCountsInCurrentScope() -> [TrackingStatus: Int] {
-        let scoped = baseFilteredItems(ignoreSubtag: false, ignoreStatusTab: true)
-        var counts: [TrackingStatus: Int] = [:]
-        for item in scoped {
-            counts[item.status, default: 0] += 1
-        }
-        return counts
+    private var trimmedSearchText: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // MARK: - Filtering & Sorting
-
-    var availableSubtagsInCurrentView: [String] {
-        let base = baseFilteredItems(ignoreSubtag: true, ignoreStatusTab: false)
-        var counts: [String: Int] = [:]
-        for item in base {
-            let trimmed = item.subtag.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                counts[trimmed, default: 0] += 1
-            }
-        }
-        return counts.keys.sorted { lhs, rhs in
-            if counts[lhs] != counts[rhs] {
-                return (counts[lhs] ?? 0) > (counts[rhs] ?? 0)
-            }
-            return lhs.localizedStandardCompare(rhs) == .orderedAscending
-        }
+    var projectionRequest: LibraryQuery.Request {
+        let text = trimmedSearchText
+        return .init(revision: catalogRevision, sortRevision: sortRevision,
+                     notesRevision: text.isEmpty ? 0 : notesRevision,
+                     options: .init(destination: selectedDestination, status: statusFilter,
+                                    subtag: subtagFilter, text: text, sortField: sortField,
+                                    ascending: sortAscending, language: language))
     }
 
-    func filteredItems(overrideStatus: TrackingStatus? = nil) -> [MediaItem] {
-        if overrideStatus == nil, let cached = cachedDefaultFilteredItems {
-            return cached
-        }
-        var result = baseFilteredItems(ignoreSubtag: false, ignoreStatusTab: overrideStatus != nil)
-        if let overrideStatus {
-            result = result.filter { $0.status == overrideStatus }
-            return sortItems(result)
-        }
-        let sorted = sortItems(result)
-        cachedDefaultFilteredItems = sorted
-        return sorted
+    var shouldProjectInBackground: Bool { counts.total >= 2_000 }
+
+    func projection() -> LibraryProjection {
+        let request = projectionRequest
+        return query.project(records, request: request)
     }
 
-    private func baseFilteredItems(ignoreSubtag: Bool, ignoreStatusTab: Bool) -> [MediaItem] {
-        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        return items.filter { item in
-            switch selectedDestination {
-            case .all:
-                break
-            case .category(let cat):
-                if item.category != cat { return false }
-            case .fiveStar:
-                if item.rating < 5 { return false }
-            }
-
-            if !ignoreStatusTab, case .single(let filterStatus) = statusFilter {
-                if item.status != filterStatus {
-                    return false
-                }
-            }
-
-            if !ignoreSubtag, let subtagFilter, !subtagFilter.isEmpty {
-                if item.subtag.trimmingCharacters(in: .whitespacesAndNewlines) != subtagFilter {
-                    return false
-                }
-            }
-
-            if !q.isEmpty {
-                let matchTitleZH = item.title.localizedCaseInsensitiveContains(q)
-                let matchTitleEN = item.titleEN.localizedCaseInsensitiveContains(q)
-                let matchTagRaw = item.subtag.localizedCaseInsensitiveContains(q)
-                let matchTagEN = MediaCategory.localizedSubtag(item.subtag, in: .en).localizedCaseInsensitiveContains(q)
-                let matchTagZH = MediaCategory.localizedSubtag(item.subtag, in: .zh).localizedCaseInsensitiveContains(q)
-                let matchNotes = item.notes.localizedCaseInsensitiveContains(q)
-                let matchCatZH = item.category.title(in: .zh).localizedCaseInsensitiveContains(q)
-                let matchCatEN = item.category.title(in: .en).localizedCaseInsensitiveContains(q)
-                if !(matchTitleZH || matchTitleEN || matchTagRaw || matchTagEN || matchTagZH || matchNotes || matchCatZH || matchCatEN) {
-                    return false
-                }
-            }
-
-            return true
-        }
+    func backgroundProjection(for request: LibraryQuery.Request) async -> LibraryProjection? {
+        guard request == projectionRequest else { return nil }
+        return await queryWorker.project(records, request: request)
     }
-
-    private static let pinyinLocale = Locale(identifier: "zh-Hans-CN")
-    private static let englishLocale = Locale(identifier: "en_US")
 
     func selectSortField(_ field: LibrarySortField) {
         if sortField == field {
@@ -201,119 +164,139 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    private func sortItems(_ list: [MediaItem]) -> [MediaItem] {
-        switch sortField {
-        case .updatedAt:
-            return list.sorted {
-                if $0.updatedAt != $1.updatedAt {
-                    return sortAscending ? ($0.updatedAt < $1.updatedAt) : ($0.updatedAt > $1.updatedAt)
-                }
-                return $0.createdAt > $1.createdAt
-            }
+    // MARK: - CRUD
 
-        case .createdAt:
-            return list.sorted {
-                if $0.createdAt != $1.createdAt {
-                    return sortAscending ? ($0.createdAt < $1.createdAt) : ($0.createdAt > $1.createdAt)
-                }
-                return $0.updatedAt > $1.updatedAt
-            }
-
-        case .rating:
-            return list.sorted {
-                let lhsRated = $0.rating > 0
-                let rhsRated = $1.rating > 0
-                if lhsRated != rhsRated {
-                    return lhsRated
-                }
-                if $0.rating != $1.rating {
-                    return sortAscending ? ($0.rating < $1.rating) : ($0.rating > $1.rating)
-                }
-                return $0.updatedAt > $1.updatedAt
-            }
-
-        case .title:
-            let activeLang = language
-            let collateLocale = (activeLang == .zh) ? Self.pinyinLocale : Self.englishLocale
-            return list.sorted {
-                let lhsName = $0.displayTitle(in: activeLang)
-                let rhsName = $1.displayTitle(in: activeLang)
-                let cmp = lhsName.compare(
-                    rhsName,
-                    options: [.caseInsensitive, .numeric, .widthInsensitive],
-                    range: nil,
-                    locale: collateLocale
-                )
-                if cmp != .orderedSame {
-                    return sortAscending ? (cmp == .orderedAscending) : (cmp == .orderedDescending)
-                }
-                return $0.updatedAt > $1.updatedAt
-            }
+    private func replaceRecords(with items: [MediaItem]) {
+        records = items
+        indices.removeAll(keepingCapacity: true)
+        indices.reserveCapacity(items.count)
+        coverReferences.removeAll(keepingCapacity: true)
+        var updated = Counts()
+        for (index, item) in items.enumerated() {
+            if indices[item.id] == nil { indices[item.id] = index }
+            if let name = item.coverFileName { coverReferences[name, default: 0] += 1 }
+            updated.include(item, delta: 1)
         }
+        if counts != updated { counts = updated }
+        refreshSelectedItem()
+        sortRevision &+= 1
+        catalogRevision &+= 1
     }
 
-    // MARK: - CRUD Operations
+    private func replaceRecord(at index: Int, with item: MediaItem) {
+        let old = records[index]
+        records[index] = item
+        if old.category != item.category || old.rating != item.rating || old.isSample != item.isSample {
+            var updated = counts
+            updated.include(old, delta: -1)
+            updated.include(item, delta: 1)
+            if counts != updated { counts = updated }
+        }
+        if old.coverFileName != item.coverFileName {
+            if let name = old.coverFileName, let count = coverReferences[name] {
+                coverReferences[name] = count > 1 ? count - 1 : nil
+            }
+            if let name = item.coverFileName { coverReferences[name, default: 0] += 1 }
+        }
+        if selectedItemID == item.id { refreshSelectedItem() }
+        if old.updatedAt != item.updatedAt || old.createdAt != item.createdAt || old.rating != item.rating
+            || old.title != item.title || old.titleEN != item.titleEN {
+            sortRevision &+= 1
+        }
+        catalogRevision &+= 1
+        scheduleSave(removing: old.coverFileName == item.coverFileName ? [] : [old.coverFileName])
+    }
 
     @discardableResult
     func addItem(_ item: MediaItem) -> MediaItem {
+        guard isReady else { return item }
         var newItem = item
         newItem.createdAt = Date()
-        newItem.updatedAt = Date()
-        items.insert(newItem, at: 0)
-        saveImmediately()
+        newItem.updatedAt = newItem.createdAt
+        var updated = records
+        updated.insert(newItem, at: 0)
+        replaceRecords(with: updated)
+        scheduleSave()
         let quoted = newItem.quotedTitle(in: language)
         showToast(language.tr("已添加\(quoted)", "Added \(quoted)"))
         return newItem
     }
 
-    func updateItem(_ updated: MediaItem, touchTimestamp: Bool = true) {
-        guard let idx = items.firstIndex(where: { $0.id == updated.id }) else { return }
-        var copy = updated
-        if touchTimestamp {
-            copy.updatedAt = Date()
+    func updateItem(_ updated: MediaItem, originalCoverFileName: String?, touchTimestamp: Bool = true) {
+        guard isReady, let index = indices[updated.id] else {
+            if updated.coverFileName != originalCoverFileName { removeUnreferencedCover(updated.coverFileName) }
+            return
         }
-        items[idx] = copy
-        saveImmediately()
+        var item = updated
+        if item.coverFileName == originalCoverFileName {
+            item.coverFileName = records[index].coverFileName
+        } else {
+            coverImports.removeValue(forKey: updated.id)?.cancel()
+        }
+        if touchTimestamp { item.updatedAt = Date() }
+        replaceRecord(at: index, with: item)
     }
 
     func updateStatus(for id: UUID, to status: TrackingStatus) {
-        guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
-        guard items[idx].status != status else { return }
-        let cat = items[idx].category
-        items[idx].status = status
-        items[idx].updatedAt = Date()
-        saveImmediately()
-        let quoted = items[idx].quotedTitle(in: language)
-        let stLabel = cat.statusLabel(for: status, in: language)
-        showToast(language.tr("\(quoted)已移至「\(stLabel)」", "Moved \(quoted) to \(stLabel)"))
+        guard isReady, let index = indices[id], records[index].status != status else { return }
+        var item = records[index]
+        item.status = status
+        item.updatedAt = Date()
+        replaceRecord(at: index, with: item)
+        let quoted = item.quotedTitle(in: language)
+        let label = item.category.statusLabel(for: status, in: language)
+        showToast(language.tr("\(quoted)已移至「\(label)」", "Moved \(quoted) to \(label)"))
     }
 
     func updateRating(for id: UUID, rating: Int) {
-        guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
         let clamped = min(max(rating, 0), 5)
-        guard items[idx].rating != clamped else { return }
-        items[idx].rating = clamped
-        items[idx].updatedAt = Date()
-        saveImmediately()
+        guard isReady, let index = indices[id], records[index].rating != clamped else { return }
+        var item = records[index]
+        item.rating = clamped
+        item.updatedAt = Date()
+        replaceRecord(at: index, with: item)
     }
 
-    /// Updates notes without mutating `updatedAt` on every keystroke (prevents shelf cards jumping mid-typing)
-    /// and coalesces disk writes.
+    /// Typing notes leaves the sort order alone. Only an active search depends on the text.
     func updateNotes(for id: UUID, notes: String) {
-        guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
-        guard items[idx].notes != notes else { return }
-        items[idx].notes = notes
-        scheduleDebouncedSave()
+        guard isReady, let index = indices[id], records[index].notes != notes else { return }
+        records[index].notes = notes
+        if selectedItemID == id { refreshSelectedItem() }
+        notesRevision &+= 1
+        scheduleSave(after: .milliseconds(300))
+    }
+
+    func importCover(_ source: CoverSource, for id: UUID) {
+        guard indices[id] != nil else { return }
+        coverImports[id]?.cancel()
+        coverImports[id] = Task { [weak self] in
+            do {
+                let saved = try await CoverManager.shared.saveCover(from: source)
+                guard !Task.isCancelled, let self else {
+                    CoverManager.shared.removeCover(fileName: saved)
+                    return
+                }
+                coverImports.removeValue(forKey: id)
+                updateCover(for: id, newCoverFileName: saved)
+            } catch {
+                guard !Task.isCancelled, let self else { return }
+                coverImports.removeValue(forKey: id)
+                showToast(error.localizedDescription)
+            }
+        }
     }
 
     func updateCover(for id: UUID, newCoverFileName: String?) {
-        guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
-        let oldCover = items[idx].coverFileName
-        guard oldCover != newCoverFileName else { return }
-        CoverManager.shared.removeCover(fileName: oldCover)
-        items[idx].coverFileName = newCoverFileName
-        saveImmediately()
-        let quoted = items[idx].quotedTitle(in: language)
+        coverImports.removeValue(forKey: id)?.cancel()
+        guard isReady, let index = indices[id] else {
+            removeUnreferencedCover(newCoverFileName)
+            return
+        }
+        guard records[index].coverFileName != newCoverFileName else { return }
+        var item = records[index]
+        item.coverFileName = newCoverFileName
+        replaceRecord(at: index, with: item)
+        let quoted = item.quotedTitle(in: language)
         if newCoverFileName != nil {
             showToast(language.tr("已更换\(quoted)的封面", "Updated cover for \(quoted)"))
         } else {
@@ -322,139 +305,156 @@ final class LibraryStore: ObservableObject {
     }
 
     func deleteItem(id: UUID) {
-        guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
-        let removed = items.remove(at: idx)
-        CoverManager.shared.removeCover(fileName: removed.coverFileName)
-        if selectedItemID == id {
-            selectedItemID = nil
-        }
-        saveImmediately()
+        guard isReady, let index = indices[id] else { return }
+        coverImports.removeValue(forKey: id)?.cancel()
+        var updated = records
+        let removed = updated.remove(at: index)
+        if selectedItemID == id { selectedItemID = nil }
+        replaceRecords(with: updated)
+        scheduleSave(removing: [removed.coverFileName])
         let quoted = removed.quotedTitle(in: language)
         showToast(language.tr("已删除\(quoted)", "Deleted \(quoted)"))
     }
 
     func clearSampleItems() {
-        let samples = items.filter(\.isSample)
-        for sample in samples {
-            CoverManager.shared.removeCover(fileName: sample.coverFileName)
-            if selectedItemID == sample.id {
-                selectedItemID = nil
-            }
-        }
-        items.removeAll(where: \.isSample)
-        saveImmediately()
+        guard isReady, hasSampleItems else { return }
+        let samples = records.filter(\.isSample)
+        for item in samples { coverImports.removeValue(forKey: item.id)?.cancel() }
+        if selectedItem?.isSample == true { selectedItemID = nil }
+        replaceRecords(with: records.filter { !$0.isSample })
+        scheduleSave(removing: samples.map(\.coverFileName))
         showToast(language.tr("已清空示例数据", "Cleared sample data"))
     }
 
     func restoreSampleItems() {
-        let samples = Self.makeStarterSamples()
-        items.append(contentsOf: samples)
-        saveImmediately()
+        guard isReady else { return }
+        replaceRecords(with: records + Self.makeStarterSamples())
+        scheduleSave()
         showToast(language.tr("已载入示例数据", "Loaded sample data"))
     }
 
     func showToast(_ message: String) {
+        toastTask?.cancel()
         withAnimation(.easeOut(duration: 0.20)) {
             toastMessage = message
         }
-        let captured = message
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_200_000_000)
-            if self.toastMessage == captured {
-                withAnimation(.easeOut(duration: 0.20)) {
-                    self.toastMessage = nil
-                }
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(2200))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.20)) {
+                self?.toastMessage = nil
             }
         }
     }
 
     // MARK: - Persistence & Backup
 
-    private func load() {
-        guard let storageURL else { return }
-        if FileManager.default.fileExists(atPath: storageURL.path) {
-            do {
-                let data = try Data(contentsOf: storageURL)
-                let decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .iso8601
-                self.items = try decoder.decode([MediaItem].self, from: data)
-                CoverManager.shared.preloadThumbnails(for: self.items.compactMap(\.coverFileName))
-                return
-            } catch {
-                print("Failed to decode library.json: \(error)")
-            }
-        }
-        self.items = Self.makeStarterSamples()
-        saveImmediately()
-    }
-
-    private func scheduleDebouncedSave() {
+    private func scheduleSave(after delay: Duration = .milliseconds(120), removing covers: [String?] = []) {
+        guard libraryFile != nil else { return }
+        revision &+= 1
+        for case let cover? in covers { coversToRemove[cover] = revision }
+        let now = ContinuousClock.now
+        let dirtySince = self.dirtySince ?? now
+        self.dirtySince = dirtySince
+        let debounce = min(delay, max(.zero, dirtySince + .seconds(2) - now))
         saveTask?.cancel()
-        saveTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled else { return }
-            self.saveImmediately()
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: debounce)
+            guard !Task.isCancelled, let self else { return }
+            saveTask = nil
+            writePendingChanges()
         }
     }
 
-    func saveImmediately() {
+    private func writePendingChanges() {
+        guard let libraryFile, !writing, savedRevision != revision else { return }
+        writing = true
+        dirtySince = nil
+        let version = revision
+        libraryFile.save(records) { [weak self] result in
+            guard let self, version > savedRevision else { return }
+            writing = false
+            switch result {
+            case .success:
+                savedRevision = version
+                removeObsoleteCovers(through: version)
+            case .failure(let error):
+                print("Failed to write library.json: \(error)")
+                showToast(language.tr("无法保存作品库：\(error.localizedDescription)",
+                                      "Could not save library: \(error.localizedDescription)"))
+            }
+            if saveTask == nil, version != revision { writePendingChanges() }
+        }
+    }
+
+    private func removeObsoleteCovers(through version: UInt64) {
+        let candidates = coversToRemove.filter { $0.value <= version }.keys
+        for cover in candidates {
+            removeUnreferencedCover(cover)
+            coversToRemove.removeValue(forKey: cover)
+        }
+    }
+
+    private func removeUnreferencedCover(_ name: String?) {
+        guard let name, coverReferences[name] == nil else { return }
+        CoverManager.shared.removeCover(fileName: name)
+    }
+
+    func flushPendingChanges() throws {
         saveTask?.cancel()
         saveTask = nil
-        guard let storageURL else { return }
-        do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(items)
-            try data.write(to: storageURL, options: .atomic)
-        } catch {
-            print("Failed to save library.json: \(error)")
-        }
+        guard let libraryFile, savedRevision != revision else { return }
+        try libraryFile.flush(records)
+        savedRevision = revision
+        writing = false
+        dirtySince = nil
+        removeObsoleteCovers(through: revision)
     }
 
     func exportLibraryJSON() {
+        guard isReady else { return }
         let panel = NSSavePanel()
         panel.title = language.tr("导出备份文件", "Export Backup File")
         panel.nameFieldStringValue = language.tr("作品库备份.json", "Shelf-Backup.json")
         panel.allowedContentTypes = [.json]
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        let items = records
 
-        do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(items)
-            try data.write(to: url, options: .atomic)
-            showToast(language.tr("数据已导出", "Backup exported"))
-        } catch {
-            showToast(language.tr("导出失败：\(error.localizedDescription)", "Export failed: \(error.localizedDescription)"))
+        Task {
+            do {
+                try await Task.detached(priority: .utility) {
+                    try LibraryFile.write(items, to: url, formatted: true)
+                }.value
+                showToast(language.tr("数据已导出", "Backup exported"))
+            } catch {
+                showToast(language.tr("导出失败：\(error.localizedDescription)", "Export failed: \(error.localizedDescription)"))
+            }
         }
     }
 
     func importLibraryJSON() {
+        guard isReady else { return }
         let panel = NSOpenPanel()
         panel.title = language.tr("导入备份文件", "Import Backup File")
         panel.allowedContentTypes = [.json]
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        do {
-            let data = try Data(contentsOf: url)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let imported = try decoder.decode([MediaItem].self, from: data)
-            var existingIDs = Set(items.map(\.id))
-            var addedCount = 0
-            for entry in imported where !existingIDs.contains(entry.id) {
-                items.append(entry)
-                existingIDs.insert(entry.id)
-                addedCount += 1
+        Task {
+            do {
+                let imported = try await Task.detached(priority: .utility) {
+                    try LibraryFile.read(from: url)
+                }.value
+                var ids = Set(indices.keys)
+                let newItems = imported.filter { ids.insert($0.id).inserted }
+                if !newItems.isEmpty {
+                    replaceRecords(with: records + newItems)
+                    scheduleSave()
+                }
+                showToast(language.tr("已成功导入 \(newItems.count) 条记录", "Imported \(newItems.count) items"))
+            } catch {
+                showToast(language.tr("导入失败：文件格式不兼容", "Import failed: incompatible file format"))
             }
-            saveImmediately()
-            CoverManager.shared.preloadThumbnails(for: items.compactMap(\.coverFileName))
-            showToast(language.tr("已成功导入 \(addedCount) 条记录", "Imported \(addedCount) items"))
-        } catch {
-            showToast(language.tr("导入失败：文件格式不兼容", "Import failed: incompatible file format"))
         }
     }
 

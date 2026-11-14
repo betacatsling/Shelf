@@ -56,16 +56,16 @@ def find_shelf_app_bundle() -> str | None:
 
 
 def quit_shelf_safely() -> bool:
-    """Quits Shelf.app if running so its applicationWillTerminate flush completes BEFORE we edit library.json."""
+    """Wait for Shelf to finish saving and exit before editing library.json."""
     if not is_shelf_running():
         return False
     subprocess.run(["pkill", "-x", "Shelf"], capture_output=True)
-    for _ in range(15):
-        time.sleep(0.1)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
         if not is_shelf_running():
-            break
-    time.sleep(0.2)
-    return True
+            return True
+        time.sleep(0.1)
+    raise SystemExit("Shelf is still running. Close it before updating the library.")
 
 
 def relaunch_shelf_if_possible():
@@ -331,6 +331,7 @@ def cmd_upsert(args):
                 break
 
     new_cover_name = None
+    old_cover = None
     if args.cover_url or args.cover_file:
         new_cover_name = save_cover_image(args.cover_url, args.cover_file)
 
@@ -349,11 +350,6 @@ def cmd_upsert(args):
             target["notes"] = args.notes
         if new_cover_name:
             old_cover = target.get("coverFileName")
-            if old_cover and old_cover != new_cover_name:
-                for folder in (COVERS_DIR, THUMBS_DIR):
-                    old_path = os.path.join(folder, old_cover)
-                    if os.path.exists(old_path):
-                        os.remove(old_path)
             target["coverFileName"] = new_cover_name
         target["updatedAt"] = now_iso
         target["isSample"] = False
@@ -378,6 +374,13 @@ def cmd_upsert(args):
         items.insert(0, entry)
 
     save_items(items)
+    if (old_cover and old_cover == os.path.basename(old_cover) and old_cover not in (".", "..")
+            and not any(item.get("coverFileName") == old_cover for item in items)):
+        for folder in (COVERS_DIR, THUMBS_DIR):
+            try:
+                os.remove(os.path.join(folder, old_cover))
+            except FileNotFoundError:
+                pass
 
     if was_running or args.open:
         relaunch_shelf_if_possible()

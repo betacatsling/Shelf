@@ -21,7 +21,9 @@ struct ItemEditorSheet: View {
     @State private var coverFileName: String? = nil
     @State private var paletteSeed: Int = Int.random(in: 0..<1000)
 
-    @State private var isDownloadingCover = false
+    @State private var isLoadingCover = false
+    @State private var coverImportTask: Task<Void, Never>?
+    @State private var dropID: UUID?
     @State private var coverErrorMessage: String? = nil
     @State private var isDropTargeted = false
     @State private var showCoverPickerSheet = false
@@ -102,7 +104,6 @@ struct ItemEditorSheet: View {
                 Spacer()
 
                 Button(language.tr("取消", "Cancel")) {
-                    cleanupUncommittedCovers()
                     dismiss()
                 }
                 .buttonStyle(
@@ -132,7 +133,7 @@ struct ItemEditorSheet: View {
                     )
                 )
                 .font(.system(size: 13, weight: .semibold))
-                .disabled(!hasValidTitle || isDownloadingCover)
+                .disabled(!hasValidTitle || isLoadingCover)
                 .keyboardShortcut(.defaultAction)
             }
             .padding(.horizontal, 24)
@@ -141,6 +142,11 @@ struct ItemEditorSheet: View {
         .frame(width: 690)
         .fixedSize(horizontal: false, vertical: true)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onDisappear {
+            coverImportTask?.cancel()
+            dropID = nil
+            cleanupUncommittedCovers()
+        }
         .onAppear {
             if let item = existingItem {
                 title = item.title
@@ -199,8 +205,7 @@ struct ItemEditorSheet: View {
                     paletteSeed: paletteSeed,
                     language: language,
                     cornerRadius: 12,
-                    isHovered: isDropTargeted,
-                    useThumbnail: false
+                    isHovered: isDropTargeted
                 )
                 .frame(width: 164, height: 246)
 
@@ -222,7 +227,7 @@ struct ItemEditorSheet: View {
                         )
                 }
 
-                if isDownloadingCover {
+                if isLoadingCover {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(Color.black.opacity(0.5))
                         .frame(width: 164, height: 246)
@@ -234,19 +239,33 @@ struct ItemEditorSheet: View {
                 }
             }
             .onDrop(of: [.fileURL, .image, .url], isTargeted: $isDropTargeted) { providers in
+                let id = UUID()
                 coverErrorMessage = nil
-                return CoverManager.shared.extractDroppedCover(from: providers) { result in
-                    switch result {
-                    case .success(let saved):
-                        assignNewTemporaryCover(saved)
-                    case .failure(let err):
-                        coverErrorMessage = err.localizedDescription
+                dropID = id
+                let accepted = CoverManager.shared.readDroppedImage(from: providers) { source in
+                    guard dropID == id else { return }
+                    dropID = nil
+                    if let source {
+                        importCover(source)
+                    } else {
+                        isLoadingCover = false
+                        coverErrorMessage = CoverError.invalidImageData.message(in: language)
                     }
                 }
+                if accepted {
+                    coverImportTask?.cancel()
+                    isLoadingCover = true
+                } else {
+                    dropID = nil
+                }
+                return accepted
             }
 
             Button {
                 coverErrorMessage = nil
+                coverImportTask?.cancel()
+                dropID = nil
+                isLoadingCover = false
                 showCoverPickerSheet = true
             } label: {
                 Label(
@@ -268,9 +287,8 @@ struct ItemEditorSheet: View {
             HStack(spacing: 6) {
                 Button {
                     coverErrorMessage = nil
-                    if let url = CoverManager.shared.chooseLocalImagePanel(lang: language),
-                       let saved = CoverManager.shared.saveImageFromFileURL(url) {
-                        assignNewTemporaryCover(saved)
+                    if let url = CoverManager.shared.chooseLocalImagePanel(lang: language) {
+                        importCover(.file(url))
                     }
                 } label: {
                     HStack(spacing: 4) {
@@ -504,39 +522,27 @@ struct ItemEditorSheet: View {
     }
 
     private func handlePasteCover() {
-        coverErrorMessage = nil
-        switch CoverManager.shared.inspectPasteboard() {
-        case .image(let img):
-            if let saved = CoverManager.shared.saveImage(img) {
-                assignNewTemporaryCover(saved)
-            }
-        case .fileURL(let url):
-            if let saved = CoverManager.shared.saveImageFromFileURL(url) {
-                assignNewTemporaryCover(saved)
-            } else {
-                coverErrorMessage = language.tr("无法读取该本地图片", "Cannot read local image file")
-            }
-        case .remoteURL(let urlStr):
-            fetchRemoteCover(from: urlStr)
-        case .empty:
+        if let source = CoverManager.shared.inspectPasteboard() {
+            importCover(source)
+        } else {
             coverErrorMessage = language.tr("剪贴板中没有检测到图片或图片链接", "No image or image URL in clipboard")
         }
     }
 
-    private func fetchRemoteCover(from urlStr: String) {
-        let trimmed = urlStr.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+    private func importCover(_ source: CoverSource) {
+        dropID = nil
+        coverImportTask?.cancel()
         coverErrorMessage = nil
-        isDownloadingCover = true
-
-        Task {
+        isLoadingCover = true
+        coverImportTask = Task {
             do {
-                let saved = try await CoverManager.shared.downloadAndSaveImage(from: trimmed)
+                let saved = try await CoverManager.shared.saveCover(from: source)
                 assignNewTemporaryCover(saved)
             } catch {
+                if Task.isCancelled { return }
                 coverErrorMessage = error.localizedDescription
             }
-            isDownloadingCover = false
+            isLoadingCover = false
         }
     }
 
@@ -544,6 +550,7 @@ struct ItemEditorSheet: View {
         for temp in temporaryCoverFiles where temp != existingItem?.coverFileName {
             CoverManager.shared.removeCover(fileName: temp)
         }
+        temporaryCoverFiles.removeAll()
     }
 
     private func commitSave() {
@@ -558,10 +565,6 @@ struct ItemEditorSheet: View {
         for temp in temporaryCoverFiles where temp != coverFileName && temp != existingItem?.coverFileName {
             CoverManager.shared.removeCover(fileName: temp)
         }
-        if let oldCover = existingItem?.coverFileName, oldCover != coverFileName {
-            CoverManager.shared.removeCover(fileName: oldCover)
-        }
-
         var result: MediaItem
         if var existing = existingItem {
             existing.title = finalZH
@@ -590,6 +593,7 @@ struct ItemEditorSheet: View {
             )
         }
 
+        temporaryCoverFiles.removeAll()
         onSave(result)
         dismiss()
     }

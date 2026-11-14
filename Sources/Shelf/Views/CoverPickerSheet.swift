@@ -28,7 +28,11 @@ struct CoverPickerSheet: View {
     @State private var statusMessage: String? = nil
     @State private var isDropTargeted: Bool = false
 
-    @State private var activeSearchTask: Task<Void, Never>? = nil
+    @State private var activeSearchTask: Task<Void, Never>?
+    @State private var coverImportTask: Task<Void, Never>?
+    @State private var dropID: UUID?
+    @State private var preparedCandidate: (id: String, fileName: String)?
+    @State private var applyCandidateImmediately = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -61,6 +65,9 @@ struct CoverPickerSheet: View {
         }
         .onDisappear {
             activeSearchTask?.cancel()
+            coverImportTask?.cancel()
+            dropID = nil
+            cleanupUncommittedFiles()
         }
     }
 
@@ -106,8 +113,7 @@ struct CoverPickerSheet: View {
                     paletteSeed: paletteSeed,
                     language: language,
                     cornerRadius: 12,
-                    isHovered: isDropTargeted,
-                    useThumbnail: false
+                    isHovered: isDropTargeted
                 )
                 .frame(width: 156, height: 234)
 
@@ -151,12 +157,7 @@ struct CoverPickerSheet: View {
                 Button {
                     statusMessage = nil
                     if let url = CoverManager.shared.chooseLocalImagePanel(lang: language) {
-                        if let saved = CoverManager.shared.saveImageFromFileURL(url) {
-                            selectedCandidateID = nil
-                            stageTemporaryCover(saved)
-                        } else {
-                            statusMessage = language.tr("无法读取所选本地图片", "Cannot read selected image")
-                        }
+                        importManualCover(.file(url))
                     }
                 } label: {
                     Label(language.tr("选择本地图片…", "Choose Local Image…"), systemImage: "folder")
@@ -215,6 +216,7 @@ struct CoverPickerSheet: View {
 
                 if previewCoverFileName != nil {
                     Button {
+                        cancelCoverImport()
                         selectedCandidateID = nil
                         previewCoverFileName = nil
                         statusMessage = nil
@@ -240,16 +242,27 @@ struct CoverPickerSheet: View {
         .padding(.vertical, 16)
         .background(Color.primary.opacity(0.02))
         .onDrop(of: [.fileURL, .image, .url], isTargeted: $isDropTargeted) { providers in
-            statusMessage = nil
-            return CoverManager.shared.extractDroppedCover(from: providers) { result in
-                switch result {
-                case .success(let saved):
-                    selectedCandidateID = nil
-                    stageTemporaryCover(saved)
-                case .failure(let err):
-                    statusMessage = err.localizedDescription
+            let id = UUID()
+            dropID = id
+            let accepted = CoverManager.shared.readDroppedImage(from: providers) { source in
+                guard dropID == id else { return }
+                dropID = nil
+                if let source {
+                    importManualCover(source)
+                } else {
+                    isLoadingPreview = false
+                    statusMessage = CoverError.invalidImageData.message(in: language)
                 }
             }
+            if accepted {
+                coverImportTask?.cancel()
+                statusMessage = nil
+                selectedCandidateID = nil
+                isLoadingPreview = true
+            } else {
+                dropID = nil
+            }
+            return accepted
         }
     }
 
@@ -420,7 +433,6 @@ struct CoverPickerSheet: View {
             Spacer()
 
             Button(language.tr("取消", "Cancel")) {
-                cleanupUncommittedFiles()
                 dismiss()
             }
             .buttonStyle(
@@ -477,7 +489,7 @@ struct CoverPickerSheet: View {
                 category: targetCategory,
                 language: activeLang
             ) { partial in
-                self.candidates = partial
+                if self.candidates != partial { self.candidates = partial }
             }
             guard !Task.isCancelled else { return }
             await MainActor.run {
@@ -488,80 +500,79 @@ struct CoverPickerSheet: View {
     }
 
     private func selectCandidate(_ candidate: CoverCandidate, applyImmediately: Bool) {
+        if selectedCandidateID == candidate.id && isLoadingPreview {
+            applyCandidateImmediately = applyCandidateImmediately || applyImmediately
+            return
+        }
+        cancelCoverImport()
         selectedCandidateID = candidate.id
         statusMessage = nil
-        isLoadingPreview = true
+        if let preparedCandidate, preparedCandidate.id == candidate.id {
+            previewCoverFileName = preparedCandidate.fileName
+            if applyImmediately { commitSelection() }
+            return
+        }
 
-        Task {
+        isLoadingPreview = true
+        applyCandidateImmediately = applyImmediately
+        coverImportTask = Task {
             do {
                 let saved: String
                 do {
-                    saved = try await CoverManager.shared.downloadAndSaveImage(from: candidate.fullURL)
+                    saved = try await CoverManager.shared.saveCover(from: .remote(candidate.fullURL))
                 } catch {
-                    saved = try await CoverManager.shared.downloadAndSaveImage(from: candidate.previewURL)
+                    try Task.checkCancellation()
+                    guard candidate.previewURL != candidate.fullURL else { throw error }
+                    saved = try await CoverManager.shared.saveCover(from: .remote(candidate.previewURL))
                 }
-                await MainActor.run {
-                    stageTemporaryCover(saved)
-                    isLoadingPreview = false
-                    if applyImmediately {
-                        commitSelection()
-                    }
-                }
+                stageTemporaryCover(saved)
+                preparedCandidate = (candidate.id, saved)
+                isLoadingPreview = false
+                if applyCandidateImmediately { commitSelection() }
             } catch {
-                await MainActor.run {
-                    isLoadingPreview = false
-                    statusMessage = language.tr("下载该候选封面失败，请尝试其他封面", "Failed to download poster; please try another")
-                }
+                guard !Task.isCancelled else { return }
+                isLoadingPreview = false
+                statusMessage = language.tr("下载该候选封面失败，请尝试其他封面", "Failed to download poster; please try another")
             }
         }
     }
 
+    private func cancelCoverImport() {
+        coverImportTask?.cancel()
+        dropID = nil
+        isLoadingPreview = false
+    }
+
     private func pasteFromClipboard() {
-        statusMessage = nil
-        switch CoverManager.shared.inspectPasteboard() {
-        case .image(let img):
-            if let saved = CoverManager.shared.saveImage(img) {
-                selectedCandidateID = nil
-                stageTemporaryCover(saved)
-            } else {
-                statusMessage = language.tr("保存剪贴板图片失败", "Failed to save clipboard image")
-            }
-        case .fileURL(let url):
-            if let saved = CoverManager.shared.saveImageFromFileURL(url) {
-                selectedCandidateID = nil
-                stageTemporaryCover(saved)
-            } else {
-                statusMessage = language.tr("无法读取剪贴板中的图片文件", "Cannot read image file from clipboard")
-            }
-        case .remoteURL(let urlStr):
-            remoteLinkInput = urlStr
-            loadFromLinkInput()
-        case .empty:
+        guard let source = CoverManager.shared.inspectPasteboard() else {
             statusMessage = language.tr("剪贴板中没有检测到图片或链接", "No image or URL found in clipboard")
+            return
         }
+        if case .remote(let url) = source { remoteLinkInput = url }
+        importManualCover(source)
     }
 
     private func loadFromLinkInput() {
         let trimmed = remoteLinkInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        statusMessage = nil
-        isLoadingPreview = true
+        importManualCover(.remote(trimmed))
+    }
 
-        Task {
+    private func importManualCover(_ source: CoverSource) {
+        cancelCoverImport()
+        statusMessage = nil
+        selectedCandidateID = nil
+        isLoadingPreview = true
+        coverImportTask = Task {
             do {
-                let saved = try await CoverManager.shared.downloadAndSaveImage(from: trimmed)
-                await MainActor.run {
-                    selectedCandidateID = nil
-                    stageTemporaryCover(saved)
-                    remoteLinkInput = ""
-                    isLoadingPreview = false
-                }
+                let saved = try await CoverManager.shared.saveCover(from: source)
+                stageTemporaryCover(saved)
+                if case .remote = source { remoteLinkInput = "" }
             } catch {
-                await MainActor.run {
-                    isLoadingPreview = false
-                    statusMessage = error.localizedDescription
-                }
+                guard !Task.isCancelled else { return }
+                statusMessage = error.localizedDescription
             }
+            isLoadingPreview = false
         }
     }
 
@@ -576,6 +587,7 @@ struct CoverPickerSheet: View {
         for temp in temporaryFiles where temp != chosen && temp != initialCoverFileName {
             CoverManager.shared.removeCover(fileName: temp)
         }
+        temporaryFiles.removeAll()
         onCommitCover(chosen)
         dismiss()
     }
@@ -589,7 +601,7 @@ private struct CoverCandidateCard: View {
     var language: AppLanguage = .zh
     let onSelect: () -> Void
 
-    @State private var loadedImage: NSImage? = nil
+    @State private var loadedImage: CGImage? = nil
     @State private var loadFailed: Bool = false
     @State private var isHovered: Bool = false
 
@@ -601,7 +613,7 @@ private struct CoverCandidateCard: View {
                         .aspectRatio(2.0 / 3.0, contentMode: .fit)
                         .overlay {
                             if let loadedImage {
-                                Image(nsImage: loadedImage)
+                                Image(decorative: loadedImage, scale: 2)
                                     .resizable()
                                     .scaledToFill()
                             } else if loadFailed {
@@ -652,11 +664,12 @@ private struct CoverCandidateCard: View {
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
         .task(id: candidate.previewURL) {
-            if let img = await CoverSearchService.shared.loadPreviewImage(from: candidate.previewURL) {
-                loadedImage = img
-            } else {
-                loadFailed = true
-            }
+            loadFailed = false
+            loadedImage = nil
+            let image = await CoverSearchService.shared.loadPreviewImage(from: candidate.previewURL)
+            guard !Task.isCancelled else { return }
+            loadedImage = image
+            loadFailed = image == nil
         }
     }
 }

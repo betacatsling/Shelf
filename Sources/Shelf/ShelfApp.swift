@@ -2,15 +2,35 @@ import AppKit
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    var onTerminate: (() -> Void)?
+    private var terminateSignal: DispatchSourceSignal?
+    var flushLibrary: (() throws -> Void)?
+    var language: (() -> AppLanguage)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The library CLI requests termination with SIGTERM before editing the JSON.
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler {
+            MainActor.assumeIsolated { NSApplication.shared.terminate(nil) }
+        }
+        source.resume()
+        terminateSignal = source
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        onTerminate?()
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        do {
+            try flushLibrary?()
+            return .terminateNow
+        } catch {
+            let lang = language?() ?? .zh
+            let alert = NSAlert(error: error)
+            alert.messageText = lang.tr("无法保存作品库", "Could Not Save Library")
+            alert.addButton(withTitle: lang.tr("返回作品库", "Return to Shelf"))
+            alert.runModal()
+            return .terminateCancel
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -21,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct ShelfApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var store = LibraryStore()
+    @State private var store = LibraryStore()
     @State private var showAddSheet = false
     @AppStorage("shelf.posterScale") private var posterScale: Double = 1.0
 
@@ -30,13 +50,14 @@ struct ShelfApp: App {
     var body: some Scene {
         WindowGroup(lang.tr("作品库", "Shelf")) {
             MainWindowView(showAddSheet: $showAddSheet)
-                .environmentObject(store)
+                .environment(store)
                 .frame(minWidth: 920, minHeight: 580)
                 .onAppear {
                     let currentStore = store
-                    appDelegate.onTerminate = { [weak currentStore] in
-                        currentStore?.saveImmediately()
+                    appDelegate.flushLibrary = { [weak currentStore] in
+                        try currentStore?.flushPendingChanges()
                     }
+                    appDelegate.language = { [weak currentStore] in currentStore?.language ?? .zh }
                 }
         }
         .defaultSize(width: 1200, height: 780)
@@ -46,6 +67,7 @@ struct ShelfApp: App {
                 Button(lang.tr("添加作品…", "New Item…")) {
                     showAddSheet = true
                 }
+                .disabled(!store.isReady)
                 .keyboardShortcut("n", modifiers: [.command])
 
                 Divider()
@@ -53,11 +75,13 @@ struct ShelfApp: App {
                 Button(lang.tr("导出备份文件…", "Export Backup…")) {
                     store.exportLibraryJSON()
                 }
+                .disabled(!store.isReady)
                 .keyboardShortcut("e", modifiers: [.command, .shift])
 
                 Button(lang.tr("导入备份文件…", "Import Backup…")) {
                     store.importLibraryJSON()
                 }
+                .disabled(!store.isReady)
                 .keyboardShortcut("i", modifiers: [.command, .shift])
 
                 Divider()
@@ -65,6 +89,7 @@ struct ShelfApp: App {
                 Button(lang.tr("载入示例数据", "Load Sample Data")) {
                     store.restoreSampleItems()
                 }
+                .disabled(!store.isReady)
 
                 Button(lang.tr("在访达中打开数据目录", "Show Data Folder in Finder")) {
                     let dir = CoverManager.shared.coversDirectory.deletingLastPathComponent()

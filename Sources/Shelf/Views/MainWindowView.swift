@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct MainWindowView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Binding var showAddSheet: Bool
     @AppStorage("shelf.posterScale") private var posterScale: Double = 1.0
     @AppStorage("shelf.collapsedShelves") private var collapsedShelvesRaw: String = ""
@@ -9,6 +9,7 @@ struct MainWindowView: View {
     @State private var editingItem: MediaItem? = nil
     @State private var coverReplacingItem: MediaItem? = nil
     @State private var quickAddPresetStatus: TrackingStatus? = nil
+    @State private var preparedLibrary: (LibraryQuery.Request, LibraryProjection)?
 
     private var lang: AppLanguage { store.language }
 
@@ -37,16 +38,21 @@ struct MainWindowView: View {
             .joined(separator: ",")
     }
 
-    private var scrollResetToken: Int {
+    private func scrollResetToken(for options: LibraryQuery.Options) -> Int {
         var hasher = Hasher()
-        hasher.combine(store.selectedDestination)
-        hasher.combine(store.statusFilter)
-        hasher.combine(store.subtagFilter)
+        hasher.combine(options.destination)
+        hasher.combine(options.status)
+        hasher.combine(options.subtag)
         return hasher.finalize()
     }
 
     var body: some View {
-        let visibleItems = store.filteredItems()
+        @Bindable var store = store
+        let request = store.projectionRequest
+        let backgroundRequest = store.shouldProjectInBackground ? request : nil
+        let prepared = backgroundRequest == nil ? nil : preparedLibrary
+        let library = backgroundRequest == nil ? store.projection() : (prepared?.1 ?? .empty)
+        let options = prepared?.0.options ?? request.options
 
         NavigationSplitView {
             SidebarView()
@@ -54,11 +60,11 @@ struct MainWindowView: View {
         } detail: {
             HStack(spacing: 0) {
                 VStack(spacing: 0) {
-                    shelfTopControlBar
+                    shelfTopControlBar(counts: library.statusCounts)
                     Divider()
 
                     ZStack(alignment: .bottom) {
-                        libraryCanvas(visibleItems: visibleItems)
+                        libraryCanvas(library, options: options, waiting: backgroundRequest != nil && prepared == nil)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                         if let toast = store.toastMessage {
@@ -86,7 +92,7 @@ struct MainWindowView: View {
                     }
 
                     Divider()
-                    bottomStatusBar(visibleCount: visibleItems.count)
+                    bottomStatusBar(visibleCount: library.count)
                 }
 
                 if let selectedItem = store.selectedItem {
@@ -95,9 +101,6 @@ struct MainWindowView: View {
                         item: selectedItem,
                         onReplaceCover: {
                             coverReplacingItem = selectedItem
-                        },
-                        onEditTapped: {
-                            editingItem = selectedItem
                         },
                         onClose: {
                             withAnimation(.snappy(duration: 0.20)) {
@@ -111,7 +114,7 @@ struct MainWindowView: View {
             .background(Color(nsColor: .windowBackgroundColor))
             .animation(.snappy(duration: 0.20), value: store.selectedItemID != nil)
             .navigationTitle(store.selectedDestination.title(in: lang))
-            .navigationSubtitle(itemCountText(visibleItems.count, compact: true))
+            .navigationSubtitle(itemCountText(library.count, compact: true))
             .searchable(
                 text: $store.searchText,
                 placement: .toolbar,
@@ -134,7 +137,7 @@ struct MainWindowView: View {
         }
         .sheet(item: $editingItem) { itemToEdit in
             ItemEditorSheet(existingItem: itemToEdit, language: lang) { updated in
-                store.updateItem(updated)
+                store.updateItem(updated, originalCoverFileName: itemToEdit.coverFileName)
             }
         }
         .sheet(item: $coverReplacingItem) { itemForCover in
@@ -149,6 +152,18 @@ struct MainWindowView: View {
                 store.updateCover(for: itemForCover.id, newCoverFileName: newCoverFileName)
             }
         }
+        .task(id: backgroundRequest) {
+            guard let backgroundRequest else {
+                preparedLibrary = nil
+                return
+            }
+            if let preparedLibrary, preparedLibrary.0.options.text != backgroundRequest.options.text {
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            guard !Task.isCancelled, let result = await store.backgroundProjection(for: backgroundRequest),
+                  !Task.isCancelled, store.projectionRequest == backgroundRequest else { return }
+            preparedLibrary = (backgroundRequest, result)
+        }
     }
 
     private func itemCountText(_ count: Int, compact: Bool) -> String {
@@ -161,32 +176,33 @@ struct MainWindowView: View {
 
     // MARK: - Top Control Bar
 
-    private var shelfTopControlBar: some View {
-        HStack(spacing: 12) {
+    private func shelfTopControlBar(counts: [TrackingStatus: Int]) -> some View {
+        @Bindable var store = store
+        return HStack(spacing: 12) {
             ViewThatFits(in: .horizontal) {
                 ShelfSegmentedControl(
-                    segments: statusSegments(includeCounts: true, compactLabels: false),
+                    segments: statusSegments(counts: counts, compactLabels: false),
                     selection: $store.statusFilter,
                     verticalPadding: 5.5,
                     equalWidthSegments: false
                 )
 
                 ShelfSegmentedControl(
-                    segments: statusSegments(includeCounts: true, compactLabels: true),
+                    segments: statusSegments(counts: counts, compactLabels: true),
                     selection: $store.statusFilter,
                     verticalPadding: 5.5,
                     equalWidthSegments: false
                 )
 
                 ShelfSegmentedControl(
-                    segments: statusSegments(includeCounts: false, compactLabels: false),
+                    segments: statusSegments(counts: nil, compactLabels: false),
                     selection: $store.statusFilter,
                     verticalPadding: 5.5,
                     equalWidthSegments: false
                 )
 
                 ShelfSegmentedControl(
-                    segments: statusSegments(includeCounts: false, compactLabels: true),
+                    segments: statusSegments(counts: nil, compactLabels: true),
                     selection: $store.statusFilter,
                     verticalPadding: 5.5,
                     equalWidthSegments: false
@@ -233,6 +249,7 @@ struct MainWindowView: View {
                 )
             )
             .fixedSize()
+            .disabled(!store.isReady)
             .help(lang.tr("添加新作品 (⌘N)", "Add new item (⌘N)"))
         }
         .padding(.horizontal, 24)
@@ -241,10 +258,9 @@ struct MainWindowView: View {
     }
 
     private func statusSegments(
-        includeCounts: Bool,
+        counts: [TrackingStatus: Int]?,
         compactLabels: Bool
     ) -> [ShelfSegmentedControl<StatusFilterOption>.Segment] {
-        let counts = includeCounts ? store.statusCountsInCurrentScope() : [:]
         var list: [ShelfSegmentedControl<StatusFilterOption>.Segment] = [
             .init(value: .allShelves, title: lang.tr("分栏", "Shelves"))
         ]
@@ -260,7 +276,7 @@ struct MainWindowView: View {
                     value: .single(st),
                     title: label,
                     dotColor: st.tintColor,
-                    count: includeCounts ? counts[st, default: 0] : nil
+                    count: counts.map { $0[st, default: 0] }
                 )
             )
         }
@@ -269,13 +285,8 @@ struct MainWindowView: View {
 
     // MARK: - Library Canvas
 
-    private func libraryCanvas(visibleItems: [MediaItem]) -> some View {
-        let tags = activeCategory != nil ? store.availableSubtagsInCurrentView : []
-        let isSearching = !store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let useGroupedShelves = store.statusFilter == .allShelves && !isSearching
-        let sections = buildSections(visibleItems: visibleItems, groupedMode: useGroupedShelves)
-        let showBadges = store.statusFilter == .allShelves && isSearching
-
+    private func libraryCanvas(_ library: LibraryProjection, options: LibraryQuery.Options, waiting: Bool) -> some View {
+        let tags = library.subtags
         return VStack(spacing: 0) {
             if let cat = activeCategory, (tags.count > 1 || store.subtagFilter != nil) {
                 subtagFilterBar(category: cat, tags: tags)
@@ -284,31 +295,39 @@ struct MainWindowView: View {
                 Divider()
             }
 
-            if visibleItems.isEmpty {
+            if store.isLoading || waiting {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if store.loadFailed {
+                Text(lang.tr("无法读取作品库文件", "Could not read the library file"))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if library.count == 0 {
                 Spacer(minLength: 0)
                 emptyStateView
                 Spacer(minLength: 0)
             } else {
-                NativePosterCollectionView(
-                    sections: sections,
+                NativePosterGrid(
+                    sections: library.sections,
+                    collapsedShelves: collapsedShelves,
                     selectedItemID: store.selectedItemID,
-                    showStatusBadges: showBadges,
+                    showStatusBadges: library.showStatusBadges,
                     posterScale: posterScale,
-                    language: lang,
-                    scrollResetToken: scrollResetToken,
-                    onSelectItem: { item in
+                    language: options.language,
+                    scrollResetToken: scrollResetToken(for: options),
+                    onSelectItem: { id in
                         withAnimation(.snappy(duration: 0.18)) {
-                            if store.selectedItemID == item.id {
+                            if store.selectedItemID == id {
                                 store.selectedItemID = nil
                             } else {
-                                store.selectedItemID = item.id
+                                store.selectedItemID = id
                             }
                         }
                     },
-                    onEnsureSelectItem: { item in
-                        if store.selectedItemID != item.id {
+                    onEnsureSelectItem: { id in
+                        if store.selectedItemID != id {
                             withAnimation(.snappy(duration: 0.18)) {
-                                store.selectedItemID = item.id
+                                store.selectedItemID = id
                             }
                         }
                     },
@@ -319,11 +338,11 @@ struct MainWindowView: View {
                             }
                         }
                     },
-                    onDoubleClickEdit: { item in
-                        editingItem = item
+                    onDoubleClickEdit: { id in
+                        editingItem = store.item(withID: id)
                     },
-                    onRequestReplaceCover: { item in
-                        coverReplacingItem = item
+                    onRequestReplaceCover: { id in
+                        coverReplacingItem = store.item(withID: id)
                     },
                     onToggleSectionCollapse: { status in
                         toggleShelfCollapse(status)
@@ -341,6 +360,9 @@ struct MainWindowView: View {
                     onUpdateCoverFileName: { id, newCoverFile in
                         store.updateCover(for: id, newCoverFileName: newCoverFile)
                     },
+                    onImportCover: { id, source in
+                        store.importCover(source, for: id)
+                    },
                     onDeleteItem: { id in
                         store.deleteItem(id: id)
                     },
@@ -350,37 +372,6 @@ struct MainWindowView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        }
-    }
-
-    private func buildSections(visibleItems: [MediaItem], groupedMode: Bool) -> [ShelfSectionModel] {
-        if groupedMode {
-            let grouped = Dictionary(grouping: visibleItems, by: \.status)
-            var result: [ShelfSectionModel] = []
-            for status in TrackingStatus.shelfOrder {
-                guard let shelfItems = grouped[status], !shelfItems.isEmpty else { continue }
-                let isCollapsed = collapsedShelves.contains(status)
-                result.append(
-                    ShelfSectionModel(
-                        status: status,
-                        title: status.localizedTitle(in: activeCategory, lang: lang),
-                        totalCount: shelfItems.count,
-                        isCollapsed: isCollapsed,
-                        items: isCollapsed ? [] : shelfItems
-                    )
-                )
-            }
-            return result
-        } else {
-            return [
-                ShelfSectionModel(
-                    status: nil,
-                    title: "",
-                    totalCount: visibleItems.count,
-                    isCollapsed: false,
-                    items: visibleItems
-                )
-            ]
         }
     }
 
@@ -450,7 +441,7 @@ struct MainWindowView: View {
                         )
                     )
 
-                    if store.items.isEmpty {
+                    if store.isEmpty {
                         Button {
                             store.restoreSampleItems()
                         } label: {
