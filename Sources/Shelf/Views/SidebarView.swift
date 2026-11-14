@@ -66,18 +66,18 @@ struct SidebarView: View {
             .padding(.top, 12)
             .padding(.bottom, 16)
         }
-        .safeAreaInset(edge: .bottom) {
-            VStack(alignment: .leading, spacing: 8) {
-                Divider()
-                    .opacity(0.5)
-
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 if store.hasSampleItems {
+                    Divider()
+                        .opacity(0.45)
+
                     HStack(spacing: 6) {
                         Image(systemName: "sparkles")
-                            .font(.system(size: 11))
+                            .font(.system(size: 10.5))
                             .foregroundStyle(.secondary)
-                        Text(lang.tr("包含示例数据", "Sample Data"))
-                            .font(.system(size: 11.5))
+                        Text(lang.tr("示例数据", "Samples"))
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                         Spacer()
                         Button(lang.tr("清空", "Clear")) {
@@ -86,33 +86,27 @@ struct SidebarView: View {
                         .buttonStyle(
                             ShelfButtonStyle(
                                 variant: .secondary,
-                                horizontalPadding: 8,
-                                verticalPadding: 3,
-                                cornerRadius: 6
+                                horizontalPadding: 7,
+                                verticalPadding: 2.5,
+                                cornerRadius: 5
                             )
                         )
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: 10.5, weight: .medium))
                     }
                     .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
                 }
 
-                HStack(spacing: 8) {
-                    Image(systemName: "globe")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
+                Divider()
 
-                    ShelfSegmentedControl(
-                        segments: [
-                            .init(value: AppLanguage.zh, title: "中文"),
-                            .init(value: AppLanguage.en, title: "English")
-                        ],
-                        selection: $store.language,
-                        verticalPadding: 4
-                    )
+                HStack(spacing: 6) {
+                    CompactLanguageToggle(language: $store.language)
+                    Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 12)
-                .padding(.bottom, 10)
+                .frame(height: 30)
             }
+            .background(.ultraThinMaterial.opacity(0.01))
         }
     }
 
@@ -173,5 +167,58 @@ private struct SidebarRowButton: View {
             return Color.accentColor
         }
         return isHovered ? Color.primary.opacity(0.065) : Color.clear
+    }
+}
+
+private struct CompactLanguageToggle: View {
+    @Binding var language: AppLanguage
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.16)) {
+                language = (language == .zh) ? .en : .zh
+            }
+        } label: {
+            HStack(spacing: 4.5) {
+                Image(systemName: "globe")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 2) {
+                    langPill(title: "中", isSelected: language == .zh)
+                    Text("/")
+                        .font(.system(size: 9.5, weight: .regular))
+                        .foregroundStyle(.tertiary)
+                    langPill(title: "EN", isSelected: language == .en)
+                }
+            }
+            .padding(.horizontal, 6.5)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isHovered ? Color.primary.opacity(0.07) : Color.primary.opacity(0.035))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(isHovered ? 0.14 : 0.08), lineWidth: 0.6)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(language.tr("切换为 English (⌘L)", "Switch to 中文 (⌘L)"))
+    }
+
+    private func langPill(title: String, isSelected: Bool) -> some View {
+        Text(title)
+            .font(.system(size: 10.5, weight: isSelected ? .semibold : .regular, design: .rounded))
+            .foregroundStyle(isSelected ? Color.primary.opacity(0.92) : Color.secondary.opacity(0.75))
+            .padding(.horizontal, 3.5)
+            .padding(.vertical, 1)
+            .background(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(isSelected ? Color.primary.opacity(0.12) : Color.clear)
+            )
     }
 }
