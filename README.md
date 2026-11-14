@@ -6,9 +6,9 @@ A native macOS vertical-poster media tracker with one-click **简体中文 / Eng
 
 ## 下载安装 / Installation
 
-前往 **[Releases](https://github.com/betacatsling/Shelf/releases)** 下载最新版本的安装包（如 `Shelf-v1.2.0-macOS-arm64.zip`）：
+前往 **[Releases](https://github.com/betacatsling/Shelf/releases)** 下载最新版本的安装包（推荐下载 `Shelf-v1.2.0-macOS-arm64.dmg`）：
 
-1. 解压得到 `Shelf.app`（显示名称：**作品库**），拖入「应用程序（Applications）」文件夹即可使用（要求 macOS 14.0+，Apple Silicon）。
+1. 双击打开 `.dmg` 镜像，将 **作品库（`Shelf.app`）** 拖入右侧 `Applications` 文件夹即可安装（要求 macOS 14.0+，Apple Silicon）。
 2. 由于未附加付费开发者公证签名，若首次打开提示“无法验证开发者”，可在终端执行以下命令解除隔离属性后打开：
    ```bash
    xattr -cr /Applications/Shelf.app
@@ -48,7 +48,8 @@ A native macOS vertical-poster media tracker with one-click **简体中文 / Eng
 ```bash
 git clone https://github.com/betacatsling/Shelf.git
 cd Shelf
-./build_app.sh
+./build_app.sh   # 编译生成 Shelf.app
+./build_dmg.sh   # 编译并打包生成 Shelf.dmg 安装镜像
 open Shelf.app
 ```
 

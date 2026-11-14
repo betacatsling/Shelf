@@ -1,6 +1,8 @@
 .DS_Store
 .build/
 .build_bundle/
+.build_dmg_stage/
 .swiftpm/
 Shelf.app/
 *.zip
+*.dmg
