@@ -6,24 +6,46 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class LibraryStore: ObservableObject {
-    @Published private(set) var items: [MediaItem] = []
+    @Published private(set) var items: [MediaItem] = [] {
+        didSet { invalidateFilterCache() }
+    }
     @Published var language: AppLanguage {
         didSet {
             UserDefaults.standard.set(language.rawValue, forKey: "shelf.language")
+            invalidateFilterCache()
         }
     }
-    @Published var selectedDestination: SidebarDestination = .all
-    @Published var statusFilter: StatusFilterOption = .allShelves
-    @Published var categoryFilter: MediaCategory? = nil
-    @Published var subtagFilter: String? = nil
-    @Published var sortField: LibrarySortField = .updatedAt
-    @Published var sortAscending: Bool = false
-    @Published var searchText: String = ""
+    @Published var selectedDestination: SidebarDestination = .all {
+        didSet { invalidateFilterCache() }
+    }
+    @Published var statusFilter: StatusFilterOption = .allShelves {
+        didSet { invalidateFilterCache() }
+    }
+    @Published var categoryFilter: MediaCategory? = nil {
+        didSet { invalidateFilterCache() }
+    }
+    @Published var subtagFilter: String? = nil {
+        didSet { invalidateFilterCache() }
+    }
+    @Published var sortField: LibrarySortField = .updatedAt {
+        didSet { invalidateFilterCache() }
+    }
+    @Published var sortAscending: Bool = false {
+        didSet { invalidateFilterCache() }
+    }
+    @Published var searchText: String = "" {
+        didSet { invalidateFilterCache() }
+    }
     @Published var selectedItemID: UUID? = nil
     @Published var toastMessage: String? = nil
 
     private let storageURL: URL?
     private var saveTask: Task<Void, Never>? = nil
+    private var cachedDefaultFilteredItems: [MediaItem]? = nil
+
+    private func invalidateFilterCache() {
+        cachedDefaultFilteredItems = nil
+    }
 
     init() {
         let savedLang = UserDefaults.standard.string(forKey: "shelf.language") ?? "zh"
@@ -107,11 +129,17 @@ final class LibraryStore: ObservableObject {
     }
 
     func filteredItems(overrideStatus: TrackingStatus? = nil) -> [MediaItem] {
+        if overrideStatus == nil, let cached = cachedDefaultFilteredItems {
+            return cached
+        }
         var result = baseFilteredItems(ignoreSubtag: false, ignoreStatusTab: overrideStatus != nil)
         if let overrideStatus {
             result = result.filter { $0.status == overrideStatus }
+            return sortItems(result)
         }
-        return sortItems(result)
+        let sorted = sortItems(result)
+        cachedDefaultFilteredItems = sorted
+        return sorted
     }
 
     private func baseFilteredItems(ignoreSubtag: Bool, ignoreStatusTab: Bool) -> [MediaItem] {
@@ -352,6 +380,7 @@ final class LibraryStore: ObservableObject {
                 let decoder = JSONDecoder()
                 decoder.dateDecodingStrategy = .iso8601
                 self.items = try decoder.decode([MediaItem].self, from: data)
+                CoverManager.shared.preloadThumbnails(for: self.items.compactMap(\.coverFileName))
                 return
             } catch {
                 print("Failed to decode library.json: \(error)")
@@ -424,6 +453,7 @@ final class LibraryStore: ObservableObject {
                 addedCount += 1
             }
             saveImmediately()
+            CoverManager.shared.preloadThumbnails(for: items.compactMap(\.coverFileName))
             showToast(language.tr("已成功导入 \(addedCount) 条记录", "Imported \(addedCount) items"))
         } catch {
             showToast(language.tr("导入失败：文件格式不兼容", "Import failed: incompatible file format"))

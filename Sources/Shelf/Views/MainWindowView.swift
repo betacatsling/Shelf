@@ -20,20 +20,13 @@ struct MainWindowView: View {
         store.selectedDestination.isStatusLocked
     }
 
-    private var cardMinWidth: CGFloat {
-        round(148 * posterScale)
-    }
-
-    private var cardMaxWidth: CGFloat {
-        round(186 * posterScale)
-    }
-
-    private var horizontalSpacing: CGFloat {
-        round(20 * max(0.85, posterScale * 0.95))
-    }
-
-    private var verticalSpacing: CGFloat {
-        round(24 * max(0.88, posterScale * 0.95))
+    private var scrollResetToken: Int {
+        var hasher = Hasher()
+        hasher.combine(store.selectedDestination)
+        hasher.combine(store.statusFilter)
+        hasher.combine(store.categoryFilter)
+        hasher.combine(store.subtagFilter)
+        return hasher.finalize()
     }
 
     var body: some View {
@@ -241,25 +234,101 @@ struct MainWindowView: View {
     private func libraryCanvas(visibleItems: [MediaItem]) -> some View {
         let tags = activeCategory != nil ? store.availableSubtagsInCurrentView : []
         let isSearching = !store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let useGroupedShelves = !isStatusLockedBySidebar && store.statusFilter == .allShelves && !isSearching
+        let sections = buildSections(visibleItems: visibleItems, groupedMode: useGroupedShelves)
+        let showBadges = useGroupedShelves ? false : !isStatusLockedBySidebar
 
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                if let cat = activeCategory, (tags.count > 1 || store.subtagFilter != nil) {
-                    subtagFilterBar(category: cat, tags: tags)
-                }
-
-                if visibleItems.isEmpty {
-                    emptyStateView
-                        .padding(.top, 64)
-                } else if !isStatusLockedBySidebar && store.statusFilter == .allShelves && !isSearching {
-                    groupedShelvesView(visibleItems: visibleItems)
-                } else {
-                    posterGrid(items: visibleItems, showStatusBadges: !isStatusLockedBySidebar)
-                }
+        return VStack(spacing: 0) {
+            if let cat = activeCategory, (tags.count > 1 || store.subtagFilter != nil) {
+                subtagFilterBar(category: cat, tags: tags)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 8)
+                Divider()
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 18)
-            .padding(.bottom, 36)
+
+            if visibleItems.isEmpty {
+                Spacer(minLength: 0)
+                emptyStateView
+                Spacer(minLength: 0)
+            } else {
+                NativePosterCollectionView(
+                    sections: sections,
+                    selectedItemID: store.selectedItemID,
+                    showStatusBadges: showBadges,
+                    posterScale: posterScale,
+                    language: lang,
+                    scrollResetToken: scrollResetToken,
+                    onSelectItem: { item in
+                        if store.selectedItemID != item.id {
+                            store.selectedItemID = item.id
+                        }
+                    },
+                    onDoubleClickEdit: { item in
+                        editingItem = item
+                    },
+                    onRequestReplaceCover: { item in
+                        coverReplacingItem = item
+                    },
+                    onToggleSectionCollapse: { status in
+                        if collapsedShelves.contains(status) {
+                            collapsedShelves.remove(status)
+                        } else {
+                            collapsedShelves.insert(status)
+                        }
+                    },
+                    onQuickAddInSection: { status in
+                        quickAddPresetStatus = status
+                        showAddSheet = true
+                    },
+                    onChangeStatus: { id, status in
+                        store.updateStatus(for: id, to: status)
+                    },
+                    onChangeRating: { id, stars in
+                        store.updateRating(for: id, rating: stars)
+                    },
+                    onUpdateCoverFileName: { id, newCoverFile in
+                        store.updateCover(for: id, newCoverFileName: newCoverFile)
+                    },
+                    onDeleteItem: { id in
+                        store.deleteItem(id: id)
+                    },
+                    onShowToast: { msg in
+                        store.showToast(msg)
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    private func buildSections(visibleItems: [MediaItem], groupedMode: Bool) -> [ShelfSectionModel] {
+        if groupedMode {
+            let grouped = Dictionary(grouping: visibleItems, by: \.status)
+            var result: [ShelfSectionModel] = []
+            for status in TrackingStatus.shelfOrder {
+                guard let shelfItems = grouped[status], !shelfItems.isEmpty else { continue }
+                let isCollapsed = collapsedShelves.contains(status)
+                result.append(
+                    ShelfSectionModel(
+                        status: status,
+                        title: status.localizedTitle(in: activeCategory, lang: lang),
+                        totalCount: shelfItems.count,
+                        isCollapsed: isCollapsed,
+                        items: isCollapsed ? [] : shelfItems
+                    )
+                )
+            }
+            return result
+        } else {
+            return [
+                ShelfSectionModel(
+                    status: nil,
+                    title: "",
+                    totalCount: visibleItems.count,
+                    isCollapsed: false,
+                    items: visibleItems
+                )
+            ]
         }
     }
 
@@ -284,86 +353,6 @@ struct MainWindowView: View {
                 }
             }
             .padding(.vertical, 2)
-        }
-    }
-
-    // MARK: - Grouped Shelves
-
-    private func groupedShelvesView(visibleItems: [MediaItem]) -> some View {
-        let grouped = Dictionary(grouping: visibleItems, by: \.status)
-
-        return VStack(alignment: .leading, spacing: 32) {
-            ForEach(TrackingStatus.shelfOrder) { status in
-                if let shelfItems = grouped[status], !shelfItems.isEmpty {
-                    let isCollapsed = collapsedShelves.contains(status)
-                    let shelfLabel = status.localizedTitle(in: activeCategory, lang: lang)
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack(spacing: 10) {
-                            ShelfHeaderToggleButton(
-                                title: shelfLabel,
-                                count: shelfItems.count,
-                                dotColor: status.tintColor,
-                                isCollapsed: isCollapsed
-                            ) {
-                                withAnimation(.snappy(duration: 0.20)) {
-                                    if isCollapsed {
-                                        collapsedShelves.remove(status)
-                                    } else {
-                                        collapsedShelves.insert(status)
-                                    }
-                                }
-                            }
-
-                            Rectangle()
-                                .fill(Color.primary.opacity(0.09))
-                                .frame(height: 1)
-
-                            ShelfIconButton(
-                                systemName: "plus",
-                                size: 24,
-                                iconSize: 11,
-                                helpText: lang.tr("添加到「\(shelfLabel)」", "Add to \(shelfLabel)")
-                            ) {
-                                quickAddPresetStatus = status
-                                showAddSheet = true
-                            }
-                        }
-
-                        if !isCollapsed {
-                            posterGrid(items: shelfItems, showStatusBadges: false)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func posterGrid(items: [MediaItem], showStatusBadges: Bool) -> some View {
-        LazyVGrid(
-            columns: [
-                GridItem(.adaptive(minimum: cardMinWidth, maximum: cardMaxWidth), spacing: horizontalSpacing)
-            ],
-            alignment: .leading,
-            spacing: verticalSpacing
-        ) {
-            ForEach(items) { item in
-                PosterCardView(
-                    item: item,
-                    isSelected: store.selectedItemID == item.id,
-                    showStatusBadge: showStatusBadges,
-                    onSelect: {
-                        if store.selectedItemID != item.id {
-                            store.selectedItemID = item.id
-                        }
-                    },
-                    onDoubleClickEdit: {
-                        editingItem = item
-                    },
-                    onReplaceCover: {
-                        coverReplacingItem = item
-                    }
-                )
-            }
         }
     }
 
@@ -523,50 +512,5 @@ struct MainWindowView: View {
             return st
         }
         return .active
-    }
-}
-
-private struct ShelfHeaderToggleButton: View {
-    let title: String
-    let count: Int
-    let dotColor: Color
-    let isCollapsed: Bool
-    let action: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 12)
-
-                Circle()
-                    .fill(dotColor)
-                    .frame(width: 8, height: 8)
-
-                Text(title)
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.primary.opacity(0.92))
-
-                Text("\(count)")
-                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 1.5)
-                    .background(Color.primary.opacity(0.08), in: Capsule())
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isHovered ? Color.primary.opacity(0.06) : Color.clear)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
     }
 }
