@@ -93,6 +93,11 @@ struct ShelfApp: App {
                 }
                 .keyboardShortcut("4", modifiers: [.command])
 
+                Button(SidebarDestination.fiveStar.title(in: lang)) {
+                    store.selectDestination(.fiveStar)
+                }
+                .keyboardShortcut("5", modifiers: [.command])
+
                 Divider()
 
                 Button(lang.tr("切换为英文 (English)", "Switch to 中文")) {

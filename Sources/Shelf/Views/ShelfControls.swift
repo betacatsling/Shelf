@@ -196,12 +196,14 @@ struct ShelfSegmentedControl<Option: Hashable>: View {
         let title: String
         var icon: String? = nil
         var dotColor: Color? = nil
+        var count: Int? = nil
         var id: Option { value }
     }
 
     let segments: [Segment]
     @Binding var selection: Option
     var verticalPadding: CGFloat = 6
+    var equalWidthSegments: Bool = true
 
     var body: some View {
         HStack(spacing: 3) {
@@ -209,7 +211,8 @@ struct ShelfSegmentedControl<Option: Hashable>: View {
                 SegmentCell(
                     segment: segment,
                     isSelected: selection == segment.value,
-                    verticalPadding: verticalPadding
+                    verticalPadding: verticalPadding,
+                    equalWidth: equalWidthSegments
                 ) {
                     if selection != segment.value {
                         withAnimation(.snappy(duration: 0.18)) {
@@ -234,6 +237,7 @@ struct ShelfSegmentedControl<Option: Hashable>: View {
         let segment: Segment
         let isSelected: Bool
         let verticalPadding: CGFloat
+        let equalWidth: Bool
         let onTap: () -> Void
 
         @State private var isHovered = false
@@ -253,10 +257,24 @@ struct ShelfSegmentedControl<Option: Hashable>: View {
                     Text(segment.title)
                         .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
                         .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+
+                    if let count = segment.count {
+                        Text("\(count)")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .monospacedDigit()
+                            .fixedSize()
+                            .foregroundStyle(
+                                isSelected
+                                    ? Color.white.opacity(0.84)
+                                    : Color.secondary.opacity(0.82)
+                            )
+                    }
                 }
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: equalWidth ? .infinity : nil)
                 .padding(.vertical, verticalPadding)
-                .padding(.horizontal, 8)
+                .padding(.horizontal, equalWidth ? 7 : 8)
+                .fixedSize(horizontal: !equalWidth, vertical: false)
                 .foregroundStyle(
                     isSelected
                         ? Color.white

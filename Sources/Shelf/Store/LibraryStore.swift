@@ -21,9 +21,6 @@ final class LibraryStore: ObservableObject {
     @Published var statusFilter: StatusFilterOption = .allShelves {
         didSet { invalidateFilterCache() }
     }
-    @Published var categoryFilter: MediaCategory? = nil {
-        didSet { invalidateFilterCache() }
-    }
     @Published var subtagFilter: String? = nil {
         didSet { invalidateFilterCache() }
     }
@@ -84,7 +81,6 @@ final class LibraryStore: ObservableObject {
     func selectDestination(_ destination: SidebarDestination) {
         selectedDestination = destination
         statusFilter = .allShelves
-        categoryFilter = nil
         subtagFilter = nil
         if let currentID = selectedItemID {
             let stillVisible = filteredItems().contains(where: { $0.id == currentID })
@@ -102,11 +98,19 @@ final class LibraryStore: ObservableObject {
             return items.count
         case .category(let cat):
             return items.reduce(0) { $0 + ($1.category == cat ? 1 : 0) }
-        case .status(let status):
-            return items.reduce(0) { $0 + ($1.status == status ? 1 : 0) }
         case .fiveStar:
             return items.reduce(0) { $0 + ($1.rating == 5 ? 1 : 0) }
         }
+    }
+
+    /// Returns item counts per tracking status within the active sidebar scope, subtag filter, and search query.
+    func statusCountsInCurrentScope() -> [TrackingStatus: Int] {
+        let scoped = baseFilteredItems(ignoreSubtag: false, ignoreStatusTab: true)
+        var counts: [TrackingStatus: Int] = [:]
+        for item in scoped {
+            counts[item.status, default: 0] += 1
+        }
+        return counts
     }
 
     // MARK: - Filtering & Sorting
@@ -151,17 +155,11 @@ final class LibraryStore: ObservableObject {
                 break
             case .category(let cat):
                 if item.category != cat { return false }
-            case .status(let status):
-                if item.status != status { return false }
             case .fiveStar:
                 if item.rating < 5 { return false }
             }
 
-            if selectedDestination.isStatusLocked {
-                if let categoryFilter, item.category != categoryFilter {
-                    return false
-                }
-            } else if !ignoreStatusTab, case .single(let filterStatus) = statusFilter {
+            if !ignoreStatusTab, case .single(let filterStatus) = statusFilter {
                 if item.status != filterStatus {
                     return false
                 }

@@ -6,7 +6,7 @@ A native macOS vertical-poster media tracker with one-click **简体中文 / Eng
 
 ## 下载安装 / Installation
 
-前往 **[Releases](https://github.com/betacatsling/Shelf/releases)** 下载最新版本的安装包（如 `Shelf-v1.1.0-macOS-arm64.zip`）：
+前往 **[Releases](https://github.com/betacatsling/Shelf/releases)** 下载最新版本的安装包（如 `Shelf-v1.2.0-macOS-arm64.zip`）：
 
 1. 解压得到 `Shelf.app`（显示名称：**作品库**），拖入「应用程序（Applications）」文件夹即可使用（要求 macOS 14.0+，Apple Silicon）。
 2. 由于未附加付费开发者公证签名，若首次打开提示“无法验证开发者”，可在终端执行以下命令解除隔离属性后打开：
@@ -18,30 +18,28 @@ A native macOS vertical-poster media tracker with one-click **简体中文 / Eng
 
 - **中英双语无缝切换（Bilingual Mode）**
   - 侧边栏底部或快捷键 `⌘L` 一键切换 **中文 / English**
-  - 切换语言时，界面文案、分类标签与作品名称整体切换为对应语言；无官方译名的作品自动保留原名，避免同屏中英混杂
+  - 切换语言时，界面文案、分类标签与作品名称整体切换为对应语言；无官方译名的作品自动保留原名，右侧详情栏同步展示双语副标题
   - 顶部搜索框在任意语言下均同时支持检索中文名与英文名
-- **三大分类 · 四种状态**
-  - **分类**：`游戏 / Games`（`⌘2`）、`文字 / Texts`（小说、非虚构、社科、漫画等，`⌘3`）、`影像 / Videos`（电影、剧集、番剧、纪录片等，`⌘4`）
-  - **状态**：
-    - **进行中 / In Progress**（按分类自动显示 `正在玩 / Playing`、`正在读 / Reading`、`正在看 / Watching`）
-    - **已完成 / Completed**（`已玩过 / Played`、`已读完 / Finished`、`已看完 / Watched`）
-    - **未完成 / Unfinished**
-    - **待开始 / Backlog**（`待玩 / Backlog`、`待读 / To Read`、`待看 / Watchlist`）
-- **`2:3` 竖版海报墙**
-  - 预解码双层位图缓存与离屏渲染优化，百余张高清海报依然保持高帧率顺滑滚动
-  - 支持**分栏陈列**与**单一状态筛选**，支持按更新时间、添加时间、个人评分、作品名称正倒序排列
+- **清晰的导航与全键盘操控**
+  - **左侧导航栏**：专注内容范围（`全部 ⌘1`、`游戏 ⌘2`、`文字 ⌘3`、`影像 ⌘4` 与精选 `五星作品 ⌘5`）
+  - **顶部状态栏**：固定展示当前范围内的实时计数（`分栏` + `进行中 / 已完成 / 未完成 / 待开始`）
+  - **全键盘支持**：海报墙支持方向键 `← → ↑ ↓` 移动选中、`Return` 快速编辑、`Esc` 或点击空白处收起右侧详情栏
+- **`2:3` 原生 120Hz 竖版海报墙**
+  - 基于原生 AppKit `NSCollectionView` 与后台并行 `CGImage` 缩略图预解码，百余张高清海报依然保持满帧顺滑滚动
+  - 支持**分栏陈列**（折叠状态自动记忆）与**单一状态筛选**，支持按更新时间、添加时间、个人评分、作品名称正倒序排列
   - 底部缩放滑块与快捷键（`⌘+` / `⌘-` / `⌘0`）自由调整海报尺寸
-- **多种封面替换方式**
-  - 内置 **「更换封面 / Change Cover」** 面板：支持按作品名在线搜索高清竖版封面（单击预览裁剪效果、双击直接应用）
-  - 支持**选择本地图片**、**粘贴剪贴板图片/截图**、**输入图片网络链接**，或直接将图片文件拖到任意海报卡片上秒换封面
+- **清爽统一的封面管理**
+  - 内置 **「更换封面 / Change Cover」** 面板：统一整合按作品名在线搜索（Steam / Bangumi / Apple，单击预览、双击应用）、本地选图、剪贴板粘贴与图片链接加载
+  - 支持直接将图片文件或网页图片拖放到任意海报卡片或详情封面上秒换封面
 - **评分、随笔与本地存储**
-  - 单击海报展开右侧详情面板，支持 1–5 星评分、切换状态与实时自动保存随笔评价
+  - 单击海报展开/收起右侧详情面板，支持 1–5 星评分、切换状态与实时自动保存随笔评价
   - 纯本地存储，支持一键导出 / 导入 `.json` 备份文件（`⇧⌘E` / `⇧⌘I`）
 
 ## 本地数据目录 / Local Storage
 
 - 记录数据：`~/Library/Application Support/Shelf/library.json`
-- 封面缓存：`~/Library/Application Support/Shelf/Covers/`
+- 原图封面：`~/Library/Application Support/Shelf/Covers/`
+- 缩略图缓存：`~/Library/Application Support/Shelf/Thumbnails/`
 
 ## 从源码编译 / Build from Source
 

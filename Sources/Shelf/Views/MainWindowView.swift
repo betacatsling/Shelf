@@ -4,11 +4,11 @@ struct MainWindowView: View {
     @EnvironmentObject private var store: LibraryStore
     @Binding var showAddSheet: Bool
     @AppStorage("shelf.posterScale") private var posterScale: Double = 1.0
+    @AppStorage("shelf.collapsedShelves") private var collapsedShelvesRaw: String = ""
 
     @State private var editingItem: MediaItem? = nil
     @State private var coverReplacingItem: MediaItem? = nil
     @State private var quickAddPresetStatus: TrackingStatus? = nil
-    @State private var collapsedShelves: Set<TrackingStatus> = []
 
     private var lang: AppLanguage { store.language }
 
@@ -16,15 +16,31 @@ struct MainWindowView: View {
         store.selectedDestination.activeCategory
     }
 
-    private var isStatusLockedBySidebar: Bool {
-        store.selectedDestination.isStatusLocked
+    private var collapsedShelves: Set<TrackingStatus> {
+        Set(
+            collapsedShelvesRaw
+                .split(separator: ",")
+                .compactMap { TrackingStatus(rawValue: String($0)) }
+        )
+    }
+
+    private func toggleShelfCollapse(_ status: TrackingStatus) {
+        var current = collapsedShelves
+        if current.contains(status) {
+            current.remove(status)
+        } else {
+            current.insert(status)
+        }
+        collapsedShelvesRaw = TrackingStatus.shelfOrder
+            .filter { current.contains($0) }
+            .map(\.rawValue)
+            .joined(separator: ",")
     }
 
     private var scrollResetToken: Int {
         var hasher = Hasher()
         hasher.combine(store.selectedDestination)
         hasher.combine(store.statusFilter)
-        hasher.combine(store.categoryFilter)
         hasher.combine(store.subtagFilter)
         return hasher.finalize()
     }
@@ -147,27 +163,38 @@ struct MainWindowView: View {
 
     private var shelfTopControlBar: some View {
         HStack(spacing: 12) {
-            if !isStatusLockedBySidebar {
+            ViewThatFits(in: .horizontal) {
                 ShelfSegmentedControl(
-                    segments: statusSegments,
+                    segments: statusSegments(includeCounts: true, compactLabels: false),
                     selection: $store.statusFilter,
-                    verticalPadding: 5.5
+                    verticalPadding: 5.5,
+                    equalWidthSegments: false
                 )
-                .frame(maxWidth: 500)
-            } else {
-                ShelfSegmentedControl(
-                    segments: [
-                        .init(value: Optional<MediaCategory>.none, title: lang.tr("全部", "All"))
-                    ] + MediaCategory.allCases.map { cat in
-                        .init(value: Optional(cat), title: cat.title(in: lang), icon: cat.systemImage)
-                    },
-                    selection: $store.categoryFilter,
-                    verticalPadding: 5.5
-                )
-                .frame(maxWidth: 380)
-            }
 
-            Spacer(minLength: 8)
+                ShelfSegmentedControl(
+                    segments: statusSegments(includeCounts: true, compactLabels: true),
+                    selection: $store.statusFilter,
+                    verticalPadding: 5.5,
+                    equalWidthSegments: false
+                )
+
+                ShelfSegmentedControl(
+                    segments: statusSegments(includeCounts: false, compactLabels: false),
+                    selection: $store.statusFilter,
+                    verticalPadding: 5.5,
+                    equalWidthSegments: false
+                )
+
+                ShelfSegmentedControl(
+                    segments: statusSegments(includeCounts: false, compactLabels: true),
+                    selection: $store.statusFilter,
+                    verticalPadding: 5.5,
+                    equalWidthSegments: false
+                )
+            }
+            .layoutPriority(1)
+
+            Spacer(minLength: 6)
 
             ShelfSortControl(
                 sortField: store.sortField,
@@ -213,16 +240,27 @@ struct MainWindowView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private var statusSegments: [ShelfSegmentedControl<StatusFilterOption>.Segment] {
+    private func statusSegments(
+        includeCounts: Bool,
+        compactLabels: Bool
+    ) -> [ShelfSegmentedControl<StatusFilterOption>.Segment] {
+        let counts = includeCounts ? store.statusCountsInCurrentScope() : [:]
         var list: [ShelfSegmentedControl<StatusFilterOption>.Segment] = [
             .init(value: .allShelves, title: lang.tr("分栏", "Shelves"))
         ]
         for st in TrackingStatus.filterOrder {
+            let label: String
+            if compactLabels && lang == .en && activeCategory == nil && st == .active {
+                label = "Active"
+            } else {
+                label = st.localizedTitle(in: activeCategory, lang: lang)
+            }
             list.append(
                 .init(
                     value: .single(st),
-                    title: st.localizedTitle(in: activeCategory, lang: lang),
-                    dotColor: st.tintColor
+                    title: label,
+                    dotColor: st.tintColor,
+                    count: includeCounts ? counts[st, default: 0] : nil
                 )
             )
         }
@@ -234,9 +272,9 @@ struct MainWindowView: View {
     private func libraryCanvas(visibleItems: [MediaItem]) -> some View {
         let tags = activeCategory != nil ? store.availableSubtagsInCurrentView : []
         let isSearching = !store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let useGroupedShelves = !isStatusLockedBySidebar && store.statusFilter == .allShelves && !isSearching
+        let useGroupedShelves = store.statusFilter == .allShelves && !isSearching
         let sections = buildSections(visibleItems: visibleItems, groupedMode: useGroupedShelves)
-        let showBadges = useGroupedShelves ? false : !isStatusLockedBySidebar
+        let showBadges = store.statusFilter == .allShelves && isSearching
 
         return VStack(spacing: 0) {
             if let cat = activeCategory, (tags.count > 1 || store.subtagFilter != nil) {
@@ -259,8 +297,26 @@ struct MainWindowView: View {
                     language: lang,
                     scrollResetToken: scrollResetToken,
                     onSelectItem: { item in
+                        withAnimation(.snappy(duration: 0.18)) {
+                            if store.selectedItemID == item.id {
+                                store.selectedItemID = nil
+                            } else {
+                                store.selectedItemID = item.id
+                            }
+                        }
+                    },
+                    onEnsureSelectItem: { item in
                         if store.selectedItemID != item.id {
-                            store.selectedItemID = item.id
+                            withAnimation(.snappy(duration: 0.18)) {
+                                store.selectedItemID = item.id
+                            }
+                        }
+                    },
+                    onDeselectAll: {
+                        if store.selectedItemID != nil {
+                            withAnimation(.snappy(duration: 0.18)) {
+                                store.selectedItemID = nil
+                            }
                         }
                     },
                     onDoubleClickEdit: { item in
@@ -270,11 +326,7 @@ struct MainWindowView: View {
                         coverReplacingItem = item
                     },
                     onToggleSectionCollapse: { status in
-                        if collapsedShelves.contains(status) {
-                            collapsedShelves.remove(status)
-                        } else {
-                            collapsedShelves.insert(status)
-                        }
+                        toggleShelfCollapse(status)
                     },
                     onQuickAddInSection: { status in
                         quickAddPresetStatus = status
@@ -505,9 +557,6 @@ struct MainWindowView: View {
     }
 
     private var defaultStatusForNewItem: TrackingStatus {
-        if case .status(let st) = store.selectedDestination {
-            return st
-        }
         if case .single(let st) = store.statusFilter {
             return st
         }

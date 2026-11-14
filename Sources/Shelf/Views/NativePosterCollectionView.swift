@@ -33,6 +33,8 @@ struct NativePosterCollectionView: NSViewRepresentable {
     let scrollResetToken: Int
 
     let onSelectItem: (MediaItem) -> Void
+    let onEnsureSelectItem: (MediaItem) -> Void
+    let onDeselectAll: () -> Void
     let onDoubleClickEdit: (MediaItem) -> Void
     let onRequestReplaceCover: (MediaItem) -> Void
     let onToggleSectionCollapse: (TrackingStatus) -> Void
@@ -81,6 +83,7 @@ struct NativePosterCollectionView: NSViewRepresentable {
 
         collectionView.dataSource = coordinator
         collectionView.delegate = coordinator
+        collectionView.coordinator = coordinator
         scrollView.documentView = collectionView
 
         coordinator.scrollView = scrollView
@@ -379,11 +382,133 @@ struct NativePosterCollectionView: NSViewRepresentable {
             )
             return header
         }
+
+        // MARK: Keyboard Navigation & Quick Actions
+
+        func editSelectedItem() {
+            guard let selectedID = parent.selectedItemID else { return }
+            for sec in parent.sections where !sec.isCollapsed {
+                if let match = sec.items.first(where: { $0.id == selectedID }) {
+                    parent.onDoubleClickEdit(match)
+                    return
+                }
+            }
+        }
+
+        func navigateSelection(keyCode: UInt16) -> Bool {
+            guard let collectionView else { return false }
+
+            var entries: [(indexPath: IndexPath, item: MediaItem)] = []
+            for (secIdx, sec) in parent.sections.enumerated() where !sec.isCollapsed {
+                for (itemIdx, item) in sec.items.enumerated() {
+                    entries.append((IndexPath(item: itemIdx, section: secIdx), item))
+                }
+            }
+            guard !entries.isEmpty else { return false }
+
+            guard let currentSelectedID = parent.selectedItemID,
+                  let currentIndex = entries.firstIndex(where: { $0.item.id == currentSelectedID })
+            else {
+                let first = entries[0]
+                parent.onEnsureSelectItem(first.item)
+                scrollItemIntoView(at: first.indexPath, in: collectionView)
+                return true
+            }
+
+            let targetEntry: (indexPath: IndexPath, item: MediaItem)?
+            switch keyCode {
+            case 123: // Left
+                targetEntry = currentIndex > 0 ? entries[currentIndex - 1] : entries[currentIndex]
+            case 124: // Right
+                targetEntry = currentIndex + 1 < entries.count ? entries[currentIndex + 1] : entries[currentIndex]
+            case 125, 126: // Down (125) / Up (126)
+                let movingDown = (keyCode == 125)
+                if let currentFrame = collectionView.layoutAttributesForItem(at: entries[currentIndex].indexPath)?.frame {
+                    let curMidX = currentFrame.midX
+                    let curMidY = currentFrame.midY
+                    var bestCandidate: (entry: (IndexPath, MediaItem), dy: CGFloat, dx: CGFloat)? = nil
+
+                    for candidate in entries where candidate.item.id != currentSelectedID {
+                        guard let frame = collectionView.layoutAttributesForItem(at: candidate.indexPath)?.frame else {
+                            continue
+                        }
+                        let dy = frame.midY - curMidY
+                        if movingDown && dy <= 12 { continue }
+                        if !movingDown && dy >= -12 { continue }
+
+                        let absDy = abs(dy)
+                        let absDx = abs(frame.midX - curMidX)
+                        if let best = bestCandidate {
+                            if absDy < best.dy - 18 || (abs(absDy - best.dy) <= 18 && absDx < best.dx) {
+                                bestCandidate = (candidate, absDy, absDx)
+                            }
+                        } else {
+                            bestCandidate = (candidate, absDy, absDx)
+                        }
+                    }
+                    targetEntry = bestCandidate?.entry
+                } else {
+                    targetEntry = nil
+                }
+            default:
+                return false
+            }
+
+            if let target = targetEntry {
+                parent.onEnsureSelectItem(target.item)
+                scrollItemIntoView(at: target.indexPath, in: collectionView)
+            }
+            return true
+        }
+
+        private func scrollItemIntoView(at indexPath: IndexPath, in collectionView: NSCollectionView) {
+            guard let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame else { return }
+            let padded = frame.insetBy(dx: 0, dy: -20)
+            collectionView.scrollToVisible(padded)
+        }
     }
 }
 
+@MainActor
 private final class KeyableCollectionView: NSCollectionView {
+    weak var coordinator: NativePosterCollectionView.Coordinator?
+
     override var acceptsFirstResponder: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        let pt = convert(event.locationInWindow, from: nil)
+        if indexPathForItem(at: pt) == nil {
+            coordinator?.parent.onDeselectAll()
+        } else {
+            super.mouseDown(with: event)
+        }
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        coordinator?.parent.onDeselectAll()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if mods.intersection([.command, .option, .control]).isEmpty {
+            switch event.keyCode {
+            case 53: // Esc
+                coordinator?.parent.onDeselectAll()
+                return
+            case 36, 76: // Return / Enter
+                coordinator?.editSelectedItem()
+                return
+            case 123, 124, 125, 126: // Arrow keys
+                if coordinator?.navigateSelection(keyCode: event.keyCode) == true {
+                    return
+                }
+            default:
+                break
+            }
+        }
+        super.keyDown(with: event)
+    }
 }
 
 // MARK: - Section Header Supplementary View
@@ -964,7 +1089,7 @@ final class PosterCardInteractiveView: NSView {
                 : NSColor.labelColor.withAlphaComponent(0.92)
 
             badgeContainer.isHidden = !(showStatusBadge || isHovered)
-            badgeLabel.isHidden = !isHovered
+            badgeLabel.isHidden = !(showStatusBadge || isHovered)
 
             let borderCol: CGColor = isCardSelected
                 ? NSColor.controlAccentColor.cgColor
@@ -1028,32 +1153,22 @@ final class PosterCardInteractiveView: NSView {
 
         // Layout top-right status badge
         if !badgeContainer.isHidden {
-            if isHovered {
-                badgeLabel.sizeToFit()
-                let textW = ceil(badgeLabel.frame.width)
-                let pillW = 7 + 6 + 4 + textW + 7
-                let pillH: CGFloat = 19
-                badgeContainer.frame = NSRect(x: w - pillW - 7, y: 7, width: pillW, height: pillH)
-                badgeContainer.layer?.cornerRadius = pillH * 0.5
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                badgeDotLayer.frame = CGRect(x: 7, y: round((pillH - 6) * 0.5), width: 6, height: 6)
-                CATransaction.commit()
-                badgeLabel.frame = NSRect(
-                    x: 17,
-                    y: round((pillH - badgeLabel.frame.height) * 0.5),
-                    width: textW,
-                    height: ceil(badgeLabel.frame.height)
-                )
-            } else {
-                let pillSize: CGFloat = 16
-                badgeContainer.frame = NSRect(x: w - pillSize - 7, y: 7, width: pillSize, height: pillSize)
-                badgeContainer.layer?.cornerRadius = pillSize * 0.5
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                badgeDotLayer.frame = CGRect(x: 5, y: 5, width: 6, height: 6)
-                CATransaction.commit()
-            }
+            badgeLabel.sizeToFit()
+            let textW = ceil(badgeLabel.frame.width)
+            let pillW = 7 + 6 + 4 + textW + 7
+            let pillH: CGFloat = 19
+            badgeContainer.frame = NSRect(x: w - pillW - 7, y: 7, width: pillW, height: pillH)
+            badgeContainer.layer?.cornerRadius = pillH * 0.5
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            badgeDotLayer.frame = CGRect(x: 7, y: round((pillH - 6) * 0.5), width: 6, height: 6)
+            CATransaction.commit()
+            badgeLabel.frame = NSRect(
+                x: 17,
+                y: round((pillH - badgeLabel.frame.height) * 0.5),
+                width: textW,
+                height: ceil(badgeLabel.frame.height)
+            )
         }
 
         dropOverlay.frame = posterTransformView.bounds
@@ -1094,13 +1209,18 @@ final class PosterCardInteractiveView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard let item, let coordinator else { return }
-        isPressed = true
-        refreshVisualState(animated: true)
-        coordinator.parent.onSelectItem(item)
+        if let cv = coordinator.collectionView {
+            window?.makeFirstResponder(cv)
+        }
         if event.clickCount >= 2 {
             isPressed = false
             refreshVisualState(animated: false)
+            coordinator.parent.onEnsureSelectItem(item)
             coordinator.parent.onDoubleClickEdit(item)
+        } else {
+            isPressed = true
+            refreshVisualState(animated: true)
+            coordinator.parent.onSelectItem(item)
         }
     }
 
@@ -1115,7 +1235,10 @@ final class PosterCardInteractiveView: NSView {
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let item, let coordinator else { return nil }
         let lang = language
-        coordinator.parent.onSelectItem(item)
+        if let cv = coordinator.collectionView {
+            window?.makeFirstResponder(cv)
+        }
+        coordinator.parent.onEnsureSelectItem(item)
 
         let menu = NSMenu()
 

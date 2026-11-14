@@ -196,14 +196,12 @@ enum TrackingStatus: String, Codable, CaseIterable, Identifiable {
 enum SidebarDestination: Hashable {
     case all
     case category(MediaCategory)
-    case status(TrackingStatus)
     case fiveStar
 
     func title(in lang: AppLanguage = .zh) -> String {
         switch self {
         case .all: return lang.tr("全部", "All")
         case .category(let cat): return cat.title(in: lang)
-        case .status(let status): return status.genericTitle(in: lang)
         case .fiveStar: return lang.tr("五星作品", "5-Star")
         }
     }
@@ -211,15 +209,6 @@ enum SidebarDestination: Hashable {
     var activeCategory: MediaCategory? {
         if case .category(let cat) = self { return cat }
         return nil
-    }
-
-    var isStatusLocked: Bool {
-        switch self {
-        case .status, .fiveStar:
-            return true
-        case .all, .category:
-            return false
-        }
     }
 }
 
@@ -351,5 +340,15 @@ struct MediaItem: Identifiable, Codable, Equatable, Hashable {
     func quotedTitle(in lang: AppLanguage) -> String {
         let name = displayTitle(in: lang)
         return lang == .zh ? "《\(name)》" : "“\(name)”"
+    }
+
+    /// Returns the counterpart language title if both Chinese and English titles exist and differ.
+    func secondaryTitle(in lang: AppLanguage) -> String? {
+        let zh = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let en = titleEN.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !zh.isEmpty, !en.isEmpty, zh.caseInsensitiveCompare(en) != .orderedSame else {
+            return nil
+        }
+        return lang == .zh ? en : zh
     }
 }

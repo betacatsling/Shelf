@@ -37,7 +37,7 @@ struct ItemDetailPanel: View {
                 .padding(.bottom, 24)
             }
         }
-        .frame(minWidth: 305, idealWidth: 330, maxWidth: 360)
+        .frame(width: 320)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             draftNotes = item.notes
@@ -122,40 +122,28 @@ struct ItemDetailPanel: View {
                     )
                     .frame(width: 132, height: 198)
 
-                    if isPosterHovered || isDropTargeted {
+                    if isDropTargeted {
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(Color.black.opacity(0.60))
+                            .fill(Color.accentColor.opacity(0.32))
                             .frame(width: 132, height: 198)
                             .overlay(
-                                VStack(spacing: 7) {
-                                    posterOverlayButton(
-                                        title: lang.tr("更换封面", "Change Cover"),
-                                        icon: "photo.on.rectangle.angled"
-                                    ) {
-                                        onReplaceCover()
-                                    }
-
-                                    posterOverlayButton(
-                                        title: lang.tr("本地选图", "Local Image"),
-                                        icon: "folder"
-                                    ) {
-                                        if let url = CoverManager.shared.chooseLocalImagePanel(lang: lang),
-                                           let saved = CoverManager.shared.saveImageFromFileURL(url) {
-                                            store.updateCover(for: item.id, newCoverFileName: saved)
-                                        }
-                                    }
-
-                                    posterOverlayButton(
-                                        title: lang.tr("粘贴图片", "Paste Image"),
-                                        icon: "doc.on.clipboard"
-                                    ) {
-                                        pasteCover()
-                                    }
-                                }
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                            )
+                            .overlay(
+                                Text(lang.tr("松开设为封面", "Drop to Set Cover"))
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(Color.black.opacity(0.75), in: Capsule())
                             )
                     }
                 }
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .onTapGesture(perform: onReplaceCover)
                 .onHover { isPosterHovered = $0 }
+                .help(lang.tr("点击更换封面，或直接拖入图片", "Click to change cover, or drop an image here"))
                 .onDrop(of: [.fileURL, .image, .url], isTargeted: $isDropTargeted) { providers in
                     CoverManager.shared.extractDroppedCover(from: providers) { result in
                         if case .success(let saved) = result {
@@ -165,10 +153,20 @@ struct ItemDetailPanel: View {
                 }
 
                 VStack(spacing: 8) {
-                    Text(shownTitle)
-                        .font(.system(size: 16.5, weight: .bold))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 16)
+                    VStack(spacing: 3) {
+                        Text(shownTitle)
+                            .font(.system(size: 16.5, weight: .bold))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 16)
+
+                        if let subTitle = item.secondaryTitle(in: lang) {
+                            Text(subTitle)
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 18)
+                        }
+                    }
 
                     HStack(spacing: 6) {
                         Label(item.category.title(in: lang), systemImage: item.category.systemImage)
@@ -190,38 +188,18 @@ struct ItemDetailPanel: View {
                         }
                     }
 
-                    HStack(spacing: 6) {
-                        Button(action: onReplaceCover) {
-                            Label(lang.tr("更换封面…", "Change Cover…"), systemImage: "photo.on.rectangle.angled")
-                                .font(.system(size: 11.5, weight: .medium))
-                        }
-                        .buttonStyle(
-                            ShelfButtonStyle(
-                                variant: .secondary,
-                                horizontalPadding: 11,
-                                verticalPadding: 5,
-                                cornerRadius: 7
-                            )
-                        )
-
-                        Button {
-                            if let url = CoverManager.shared.chooseLocalImagePanel(lang: lang),
-                               let saved = CoverManager.shared.saveImageFromFileURL(url) {
-                                store.updateCover(for: item.id, newCoverFileName: saved)
-                            }
-                        } label: {
-                            Label(lang.tr("本地选图", "Local Image"), systemImage: "folder")
-                                .font(.system(size: 11.5, weight: .medium))
-                        }
-                        .buttonStyle(
-                            ShelfButtonStyle(
-                                variant: .secondary,
-                                horizontalPadding: 10,
-                                verticalPadding: 5,
-                                cornerRadius: 7
-                            )
-                        )
+                    Button(action: onReplaceCover) {
+                        Label(lang.tr("更换封面…", "Change Cover…"), systemImage: "photo.on.rectangle.angled")
+                            .font(.system(size: 11.5, weight: .medium))
                     }
+                    .buttonStyle(
+                        ShelfButtonStyle(
+                            variant: .secondary,
+                            horizontalPadding: 13,
+                            verticalPadding: 5,
+                            cornerRadius: 7
+                        )
+                    )
                     .padding(.top, 2)
                 }
             }
@@ -232,28 +210,11 @@ struct ItemDetailPanel: View {
                 systemName: "xmark",
                 size: 28,
                 iconSize: 11,
-                helpText: lang.tr("收起详情栏", "Hide Details"),
+                helpText: lang.tr("收起详情栏 (Esc)", "Hide Details (Esc)"),
                 action: onClose
             )
             .padding(12)
         }
-    }
-
-    private func posterOverlayButton(title: String, icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: icon)
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color.white.opacity(0.20), in: Capsule())
-                .overlay(
-                    Capsule()
-                        .strokeBorder(Color.white.opacity(0.32), lineWidth: 0.8)
-                )
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
     }
 
     private var statusSwitcherSection: some View {
@@ -423,30 +384,6 @@ struct ItemDetailPanel: View {
                 )
                 .help(lang.tr("删除", "Delete"))
             }
-        }
-    }
-
-    private func pasteCover() {
-        switch CoverManager.shared.inspectPasteboard() {
-        case .image(let img):
-            if let saved = CoverManager.shared.saveImage(img) {
-                store.updateCover(for: item.id, newCoverFileName: saved)
-            }
-        case .fileURL(let url):
-            if let saved = CoverManager.shared.saveImageFromFileURL(url) {
-                store.updateCover(for: item.id, newCoverFileName: saved)
-            }
-        case .remoteURL(let urlStr):
-            Task {
-                do {
-                    let saved = try await CoverManager.shared.downloadAndSaveImage(from: urlStr)
-                    store.updateCover(for: item.id, newCoverFileName: saved)
-                } catch {
-                    store.showToast(error.localizedDescription)
-                }
-            }
-        case .empty:
-            store.showToast(lang.tr("剪贴板中没有检测到图片或链接", "No image or link found in clipboard"))
         }
     }
 }

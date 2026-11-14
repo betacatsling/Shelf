@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 BASE_DIR = os.path.expanduser("~/Library/Application Support/Shelf")
 LIB_PATH = os.path.join(BASE_DIR, "library.json")
 COVERS_DIR = os.path.join(BASE_DIR, "Covers")
+THUMBS_DIR = os.path.join(BASE_DIR, "Thumbnails")
 
 VALID_CATEGORIES = ("game", "novel", "video")
 VALID_STATUSES = ("active", "completed", "unfinished", "backlog")
@@ -349,9 +350,10 @@ def cmd_upsert(args):
         if new_cover_name:
             old_cover = target.get("coverFileName")
             if old_cover and old_cover != new_cover_name:
-                old_path = os.path.join(COVERS_DIR, old_cover)
-                if os.path.exists(old_path):
-                    os.remove(old_path)
+                for folder in (COVERS_DIR, THUMBS_DIR):
+                    old_path = os.path.join(folder, old_cover)
+                    if os.path.exists(old_path):
+                        os.remove(old_path)
             target["coverFileName"] = new_cover_name
         target["updatedAt"] = now_iso
         target["isSample"] = False

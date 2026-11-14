@@ -36,20 +36,7 @@ struct SidebarView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 3) {
-                    sectionHeader(lang.tr("状态", "Status"))
-
-                    ForEach(TrackingStatus.filterOrder) { status in
-                        let dest: SidebarDestination = .status(status)
-                        SidebarRowButton(
-                            title: status.genericTitle(in: lang),
-                            icon: status.systemImage,
-                            tint: status.tintColor,
-                            count: store.count(for: dest),
-                            isSelected: store.selectedDestination == dest
-                        ) {
-                            store.selectDestination(dest)
-                        }
-                    }
+                    sectionHeader(lang.tr("精选", "Collections"))
 
                     SidebarRowButton(
                         title: SidebarDestination.fiveStar.title(in: lang),
@@ -113,7 +100,7 @@ struct SidebarView: View {
     private func sectionHeader(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.primary.opacity(0.48))
             .padding(.horizontal, 10)
             .padding(.bottom, 3)
     }
@@ -147,7 +134,8 @@ private struct SidebarRowButton: View {
                 if count > 0 {
                     Text("\(count)")
                         .font(.system(size: 11.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(isSelected ? Color.white.opacity(0.88) : Color.secondary)
+                        .monospacedDigit()
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.90) : Color.primary.opacity(0.48))
                 }
             }
             .padding(.horizontal, 10)

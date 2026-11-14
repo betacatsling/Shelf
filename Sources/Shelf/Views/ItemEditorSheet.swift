@@ -21,7 +21,6 @@ struct ItemEditorSheet: View {
     @State private var coverFileName: String? = nil
     @State private var paletteSeed: Int = Int.random(in: 0..<1000)
 
-    @State private var remoteURLInput: String = ""
     @State private var isDownloadingCover = false
     @State private var coverErrorMessage: String? = nil
     @State private var isDropTargeted = false
@@ -310,32 +309,7 @@ struct ItemEditorSheet: View {
                         fullWidth: true
                     )
                 )
-            }
-
-            HStack(spacing: 5) {
-                TextField(language.tr("粘贴图片网络链接…", "Paste image URL…"), text: $remoteURLInput)
-                    .textFieldStyle(.roundedBorder)
-                    .controlSize(.small)
-                    .font(.system(size: 11))
-                    .onSubmit {
-                        fetchRemoteCover()
-                    }
-
-                if !remoteURLInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button(language.tr("加载", "Load")) {
-                        fetchRemoteCover()
-                    }
-                    .buttonStyle(
-                        ShelfButtonStyle(
-                            variant: .primary,
-                            horizontalPadding: 9,
-                            verticalPadding: 4,
-                            cornerRadius: 6
-                        )
-                    )
-                    .font(.system(size: 11, weight: .semibold))
-                    .disabled(isDownloadingCover)
-                }
+                .help(language.tr("粘贴剪贴板图片、截图或图片链接", "Paste image, screenshot, or image URL from clipboard"))
             }
 
             if coverFileName != nil {
@@ -414,6 +388,14 @@ struct ItemEditorSheet: View {
                     selection: $category,
                     verticalPadding: 6
                 )
+                .onChange(of: category) { _, newCategory in
+                    let otherPresets = MediaCategory.allCases
+                        .filter { $0 != newCategory }
+                        .flatMap(\.presetTags)
+                    if otherPresets.contains(subtag) && !newCategory.presetTags.contains(subtag) {
+                        subtag = ""
+                    }
+                }
             }
 
             // 3. Status
@@ -535,24 +517,22 @@ struct ItemEditorSheet: View {
                 coverErrorMessage = language.tr("无法读取该本地图片", "Cannot read local image file")
             }
         case .remoteURL(let urlStr):
-            remoteURLInput = urlStr
-            fetchRemoteCover()
+            fetchRemoteCover(from: urlStr)
         case .empty:
             coverErrorMessage = language.tr("剪贴板中没有检测到图片或图片链接", "No image or image URL in clipboard")
         }
     }
 
-    private func fetchRemoteCover() {
-        let urlStr = remoteURLInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !urlStr.isEmpty else { return }
+    private func fetchRemoteCover(from urlStr: String) {
+        let trimmed = urlStr.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
         coverErrorMessage = nil
         isDownloadingCover = true
 
         Task {
             do {
-                let saved = try await CoverManager.shared.downloadAndSaveImage(from: urlStr)
+                let saved = try await CoverManager.shared.downloadAndSaveImage(from: trimmed)
                 assignNewTemporaryCover(saved)
-                remoteURLInput = ""
             } catch {
                 coverErrorMessage = error.localizedDescription
             }
