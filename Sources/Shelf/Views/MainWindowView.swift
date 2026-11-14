@@ -9,16 +9,13 @@ struct MainWindowView: View {
     @State private var coverReplacingItem: MediaItem? = nil
     @State private var quickAddPresetStatus: TrackingStatus? = nil
     @State private var collapsedShelves: Set<TrackingStatus> = []
-    @State private var categoryFilterInStatusView: MediaCategory? = nil
 
     private var activeCategory: MediaCategory? {
         store.selectedDestination.activeCategory
     }
 
     private var isStatusLockedBySidebar: Bool {
-        if case .status = store.selectedDestination { return true }
-        if case .fiveStar = store.selectedDestination { return true }
-        return false
+        store.selectedDestination.isStatusLocked
     }
 
     private var cardMinWidth: CGFloat {
@@ -38,10 +35,7 @@ struct MainWindowView: View {
     }
 
     var body: some View {
-        let rawVisibleItems = store.filteredItems()
-        let visibleItems = isStatusLockedBySidebar && categoryFilterInStatusView != nil
-            ? rawVisibleItems.filter { $0.category == categoryFilterInStatusView }
-            : rawVisibleItems
+        let visibleItems = store.filteredItems()
 
         NavigationSplitView {
             SidebarView()
@@ -112,9 +106,6 @@ struct MainWindowView: View {
                 toolbarContent
             }
         }
-        .onChange(of: store.selectedDestination) { _, _ in
-            categoryFilterInStatusView = nil
-        }
         .sheet(isPresented: $showAddSheet) {
             ItemEditorSheet(
                 existingItem: nil,
@@ -161,7 +152,7 @@ struct MainWindowView: View {
                     ] + MediaCategory.allCases.map { cat in
                         .init(value: Optional(cat), title: cat.title, icon: cat.systemImage)
                     },
-                    selection: $categoryFilterInStatusView,
+                    selection: $store.categoryFilter,
                     verticalPadding: 5.5
                 )
                 .frame(maxWidth: 360)

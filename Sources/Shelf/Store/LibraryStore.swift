@@ -9,6 +9,7 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var items: [MediaItem] = []
     @Published var selectedDestination: SidebarDestination = .all
     @Published var statusFilter: StatusFilterOption = .allShelves
+    @Published var categoryFilter: MediaCategory? = nil
     @Published var subtagFilter: String? = nil
     @Published var sortField: LibrarySortField = .updatedAt
     @Published var sortAscending: Bool = false
@@ -44,8 +45,9 @@ final class LibraryStore: ObservableObject {
     }
 
     func selectDestination(_ destination: SidebarDestination) {
-        guard selectedDestination != destination else { return }
         selectedDestination = destination
+        statusFilter = .allShelves
+        categoryFilter = nil
         subtagFilter = nil
         if let currentID = selectedItemID {
             let stillVisible = filteredItems().contains(where: { $0.id == currentID })
@@ -112,10 +114,12 @@ final class LibraryStore: ObservableObject {
                 if item.rating < 5 { return false }
             }
 
-            if !ignoreStatusTab, case .single(let filterStatus) = statusFilter {
-                if case .status = selectedDestination {
-                    // Sidebar already filters by status
-                } else if item.status != filterStatus {
+            if selectedDestination.isStatusLocked {
+                if let categoryFilter, item.category != categoryFilter {
+                    return false
+                }
+            } else if !ignoreStatusTab, case .single(let filterStatus) = statusFilter {
+                if item.status != filterStatus {
                     return false
                 }
             }

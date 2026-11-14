@@ -160,6 +160,15 @@ enum SidebarDestination: Hashable {
         if case .category(let cat) = self { return cat }
         return nil
     }
+
+    var isStatusLocked: Bool {
+        switch self {
+        case .status, .fiveStar:
+            return true
+        case .all, .category:
+            return false
+        }
+    }
 }
 
 enum StatusFilterOption: Hashable {
