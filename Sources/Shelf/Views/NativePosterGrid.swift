@@ -22,6 +22,7 @@ struct NativePosterGrid: NSViewRepresentable {
     let selectedItemID: UUID?
     let showStatusBadges: Bool
     let posterScale: Double
+    var posterWidthBasis: CGFloat? = nil
     let language: AppLanguage
     let scrollResetToken: Int
 
@@ -45,6 +46,7 @@ struct NativePosterGrid: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let coordinator = context.coordinator
+        coordinator.reduceMotion = context.environment.accessibilityReduceMotion
 
         let initialRect = NSRect(x: 0, y: 0, width: 900, height: 640)
         let scrollView = NSScrollView(frame: initialRect)
@@ -69,6 +71,7 @@ struct NativePosterGrid: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.reduceMotion = context.environment.accessibilityReduceMotion
         context.coordinator.update(self)
     }
 
@@ -80,6 +83,11 @@ struct NativePosterGrid: NSViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject {
+        private struct ViewportAnchor {
+            let id: UUID
+            let offset: CGFloat
+        }
+
         var parent: NativePosterGrid
         weak var scrollView: NSScrollView?
         weak var gridView: PosterGridView?
@@ -88,6 +96,7 @@ struct NativePosterGrid: NSViewRepresentable {
         private var headers: [Int: ShelfSectionHeaderView] = [:]
         private var recycledHeaders: [ShelfSectionHeaderView] = []
         private var mountedArea: CGRect?
+        private var viewportSize: CGSize = .zero
         private var boundsObservationSuspended = false
 
         let layout = PosterGridLayout()
@@ -100,6 +109,13 @@ struct NativePosterGrid: NSViewRepresentable {
         private var movingUp = false
         private var hasLoadedInitialData = false
         private(set) var isLiveScrolling: Bool = false
+        var reduceMotion = false {
+            didSet {
+                if reduceMotion && !oldValue {
+                    for card in cards.values { card.cancelReflowAnimation() }
+                }
+            }
+        }
         private var legacyScrollEnd: Task<Void, Never>?
         weak var activeHoveredView: PosterCardInteractiveView?
 
@@ -169,6 +185,7 @@ struct NativePosterGrid: NSViewRepresentable {
         private func suspendHoverForScrolling() {
             isLiveScrolling = true
             clearHoveredCell(animated: false)
+            for card in cards.values { card.cancelReflowAnimation() }
         }
 
         private func restoreHoverAfterScrolling() {
@@ -227,6 +244,13 @@ struct NativePosterGrid: NSViewRepresentable {
             guard let scrollView else { return }
             let priorSelection = selectedID
             selectedID = parent.selectedItemID
+            let clip = scrollView.contentView
+            let savedY = clip.bounds.minY
+            let resetScroll = oldParent.scrollResetToken != parent.scrollResetToken
+            let scaleChanged = oldParent.posterScale != parent.posterScale
+                || oldParent.posterWidthBasis != parent.posterWidthBasis
+            let resized = viewportSize != clip.bounds.size
+            let anchor = !resetScroll && (scaleChanged || resized) ? viewportAnchor(in: clip.bounds) : nil
 
             let initial = !hasLoadedInitialData
             let contentChanged = initial || oldParent.sections != parent.sections
@@ -243,32 +267,29 @@ struct NativePosterGrid: NSViewRepresentable {
             }
 
             let structureChanged = initial || (contentChanged && !hasSamePositions(as: oldSections))
-            let resetScroll = oldParent.scrollResetToken != parent.scrollResetToken
             let appearanceChanged = contentChanged || oldParent.language != parent.language
                 || oldParent.showStatusBadges != parent.showStatusBadges
+            let previousFrames = !structureChanged && !scaleChanged && !resetScroll
+                ? cardFramesBeforeDrawerResize(to: clip.bounds) : nil
+            let opensDrawer = clip.bounds.width < viewportSize.width
             if structureChanged {
                 hasLoadedInitialData = true
                 clearHoveredCell(animated: false)
+                for card in cards.values { card.cancelReflowAnimation() }
                 stopPrefetching()
                 rebuildIndexPaths()
             }
 
-            let clip = scrollView.contentView
-            let savedY = clip.bounds.origin.y
-            boundsObservationSuspended = true
-            let changedGeometry = updateGridSize(for: clip.bounds.size)
-            if resetScroll || changedGeometry {
-                let maxY = max(0, layout.contentHeight - clip.bounds.height)
-                let y = resetScroll ? 0 : min(max(0, savedY), maxY)
-                if abs(clip.bounds.origin.y - y) > 0.5 {
-                    clip.scroll(to: NSPoint(x: 0, y: y))
-                    scrollView.reflectScrolledClipView(clip)
-                }
+            if structureChanged || scaleChanged || resized || resetScroll {
+                boundsObservationSuspended = true
+                updateGridSize(for: clip.bounds.size)
+                setScrollPosition(resetScroll ? 0 : restoredY(for: anchor, fallback: savedY), in: scrollView)
+                boundsObservationSuspended = false
             }
-            boundsObservationSuspended = false
 
-            if appearanceChanged || changedGeometry || resetScroll {
-                updateMountedViews(force: true)
+            if appearanceChanged || scaleChanged || resized || resetScroll {
+                updateMountedViews(force: true, reconfigure: appearanceChanged)
+                animateReflow(from: previousFrames, in: clip.bounds, opensDrawer: opensDrawer)
                 updatePrefetchPlan()
             }
             if priorSelection != selectedID {
@@ -276,26 +297,87 @@ struct NativePosterGrid: NSViewRepresentable {
             }
         }
 
-        private func updateGridSize(for viewport: CGSize) -> Bool {
-            guard let gridView else { return false }
-            let changed = layout.update(sections: sections, scale: parent.posterScale, width: viewport.width)
+        private func updateGridSize(for viewport: CGSize) {
+            guard let gridView else { return }
+            viewportSize = viewport
+            layout.update(sections: sections, scale: parent.posterScale, width: viewport.width,
+                          posterWidthBasis: parent.posterWidthBasis)
             let size = CGSize(width: viewport.width, height: max(layout.contentHeight, viewport.height))
             if gridView.frame.size != size { gridView.setFrameSize(size) }
-            return changed
         }
 
         private func clipFrameChanged() {
             guard !boundsObservationSuspended, let scrollView else { return }
+            let viewport = scrollView.contentView.bounds
+            guard viewport.size != viewportSize else { return }
+            let anchor = viewport.width != viewportSize.width ? viewportAnchor(in: viewport) : nil
+            let previousFrames = cardFramesBeforeDrawerResize(to: viewport)
+            let opensDrawer = viewport.width < viewportSize.width
             boundsObservationSuspended = true
-            _ = updateGridSize(for: scrollView.contentView.bounds.size)
+            updateGridSize(for: viewport.size)
+            setScrollPosition(restoredY(for: anchor, fallback: viewport.minY), in: scrollView)
             boundsObservationSuspended = false
-            updateMountedViews(force: true)
+            updateMountedViews(force: true, reconfigure: false)
+            animateReflow(from: previousFrames, in: scrollView.contentView.bounds, opensDrawer: opensDrawer)
             updatePrefetchPlan()
         }
 
+        private func cardFramesBeforeDrawerResize(to viewport: CGRect) -> [IndexPath: CGRect]? {
+            guard let fullWidth = parent.posterWidthBasis, !reduceMotion, !isLiveScrolling,
+                  scrollView?.window?.inLiveResize == false, viewport.height == viewportSize.height,
+                  abs(max(viewport.width, viewportSize.width) - fullWidth) < 1,
+                  abs(abs(viewport.width - viewportSize.width) - DetailDrawer.width) < 1 else { return nil }
+
+            let previous = CGRect(origin: viewport.origin, size: viewportSize)
+            return cards.reduce(into: [:]) { frames, entry in
+                let frame = entry.value.frame
+                if previous.intersects(frame) {
+                    frames[entry.key] = frame.offsetBy(dx: -previous.minX, dy: -previous.minY)
+                }
+            }
+        }
+
+        private func animateReflow(from previousFrames: [IndexPath: CGRect]?, in viewport: CGRect, opensDrawer: Bool) {
+            guard let previousFrames else { return }
+            for (path, card) in cards where viewport.intersects(card.frame) {
+                let frame = card.frame.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
+                if previousFrames[path] != frame {
+                    card.animateReflow(horizontalOffset: opensDrawer ? 12 : -12)
+                }
+            }
+        }
+
+        private func viewportAnchor(in viewport: CGRect) -> ViewportAnchor? {
+            guard viewport.minY > 0.5, viewportSize.width > 0 else { return nil }
+            let oldViewport = CGRect(origin: viewport.origin, size: viewportSize)
+            if let selectedID, let path = indexPaths[selectedID], let frame = layout.itemFrame(at: path),
+               frame.intersects(oldViewport) {
+                return ViewportAnchor(id: selectedID, offset: frame.minY - oldViewport.minY)
+            }
+            guard let path = layout.itemPaths(in: oldViewport, reverse: false).first,
+                  let poster = poster(at: path), let frame = layout.itemFrame(at: path) else { return nil }
+            return ViewportAnchor(id: poster.id, offset: frame.minY - oldViewport.minY)
+        }
+
+        private func restoredY(for anchor: ViewportAnchor?, fallback: CGFloat) -> CGFloat {
+            guard let anchor, let path = indexPaths[anchor.id], let frame = layout.itemFrame(at: path)
+            else { return fallback }
+            return frame.minY - anchor.offset
+        }
+
+        private func setScrollPosition(_ y: CGFloat, in scrollView: NSScrollView) {
+            let clip = scrollView.contentView
+            let maxY = max(0, layout.contentHeight - clip.bounds.height)
+            let clamped = min(max(0, y), maxY)
+            if abs(clip.bounds.minY - clamped) > 0.5 {
+                clip.scroll(to: NSPoint(x: 0, y: clamped))
+                scrollView.reflectScrolledClipView(clip)
+            }
+        }
+
         private func clipBoundsChanged() {
-            guard !boundsObservationSuspended else { return }
-            updateMountedViews(force: false)
+            guard !boundsObservationSuspended, scrollView?.contentView.bounds.size == viewportSize else { return }
+            updateMountedViews(force: false, reconfigure: false)
             updatePrefetchPlanIfNeeded()
         }
 
@@ -330,7 +412,7 @@ struct NativePosterGrid: NSViewRepresentable {
             return (0..<section.visibleCount).contains(path.item) ? section.items[path.item] : nil
         }
 
-        private func updateMountedViews(force: Bool) {
+        private func updateMountedViews(force: Bool, reconfigure: Bool) {
             guard let gridView, let viewport = scrollView?.contentView.bounds, viewport.height > 0 else { return }
             let step = layout.rowStep
             guard step > 0 else { return }
@@ -353,13 +435,17 @@ struct NativePosterGrid: NSViewRepresentable {
             }
 
             for (path, frame) in positions {
-                guard let poster = poster(at: path) else { continue }
                 if let card = cards[path] {
                     if force {
-                        if card.frame != frame { card.frame = frame }
-                        configure(card, for: poster)
+                        if card.frame.size != frame.size {
+                            card.frame = frame
+                        } else if card.frame.origin != frame.origin {
+                            card.setFrameOrigin(frame.origin)
+                        }
+                        if reconfigure, let poster = poster(at: path) { configure(card, for: poster) }
                     }
                 } else {
+                    guard let poster = poster(at: path) else { continue }
                     let card = recycledCards.popLast() ?? PosterCardInteractiveView()
                     card.frame = frame
                     configure(card, for: poster)
@@ -379,7 +465,7 @@ struct NativePosterGrid: NSViewRepresentable {
                 if let header = headers[index] {
                     if force {
                         if header.frame != frame { header.frame = frame }
-                        configure(header, section: index)
+                        if reconfigure { configure(header, section: index) }
                     }
                 } else {
                     let header = recycledHeaders.popLast() ?? ShelfSectionHeaderView()
@@ -415,8 +501,6 @@ struct NativePosterGrid: NSViewRepresentable {
             let behind = layout.itemPaths(in: movingUp ? below : above, reverse: !movingUp)
             let onScreen = layout.itemPaths(in: viewport, reverse: movingUp)
 
-            // The first representable update can run before AppKit has prepared its layout.
-            // Leave this position eligible for prefetch when the first item is installed.
             guard !onScreen.isEmpty || !upcoming.isEmpty || !behind.isEmpty else { return }
             prefetchAnchor = viewport
 
@@ -898,6 +982,7 @@ private final class HeaderPlusButton: NSView {
 
 @MainActor
 final class PosterCardInteractiveView: NSView {
+    private static let reflowAnimationKey = "drawerReflow"
     private let posterTransformView = NSView()
     private let shadowLayer = CALayer()
     private let artworkLayer = CALayer()
@@ -1030,6 +1115,7 @@ final class PosterCardInteractiveView: NSView {
 
     func recycle() {
         suspendArtwork()
+        cancelReflowAnimation()
         if coordinator?.activeHoveredView === self {
             coordinator?.clearHoveredCell(animated: false)
         }
@@ -1037,6 +1123,32 @@ final class PosterCardInteractiveView: NSView {
         isHovered = false
         isPressed = false
         dropOverlay?.isHidden = true
+    }
+
+    func animateReflow(horizontalOffset: CGFloat) {
+        guard let layer else { return }
+        let duration = 0.16
+        let fade = CABasicAnimation(keyPath: "opacity")
+        let currentOpacity = layer.animation(forKey: Self.reflowAnimationKey) != nil ? layer.presentation()?.opacity : nil
+        fade.fromValue = currentOpacity ?? 0.66
+        fade.toValue = 1
+        fade.duration = duration
+
+        let slide = CABasicAnimation(keyPath: "transform.translation.x")
+        slide.isAdditive = true
+        slide.fromValue = horizontalOffset
+        slide.toValue = 0
+        slide.duration = duration
+
+        let animation = CAAnimationGroup()
+        animation.animations = [fade, slide]
+        animation.duration = duration
+        animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(animation, forKey: Self.reflowAnimationKey)
+    }
+
+    func cancelReflowAnimation() {
+        layer?.removeAnimation(forKey: Self.reflowAnimationKey)
     }
 
     func configure(
@@ -1150,6 +1262,7 @@ final class PosterCardInteractiveView: NSView {
     }
 
     private func refreshVisualState(animated: Bool) {
+        let moves = coordinator?.reduceMotion != true && coordinator?.isLiveScrolling != true
         effectiveAppearance.performAsCurrentDrawingAppearance {
             updateStatusBadge()
 
@@ -1158,8 +1271,8 @@ final class PosterCardInteractiveView: NSView {
                 : NSColor.white.withAlphaComponent(isHovered ? 0.36 : 0.16).cgColor
             let borderW: CGFloat = isCardSelected ? 2.5 : (isHovered ? 1.2 : 0.75)
 
-            let scale: CGFloat = isPressed ? 0.976 : (isHovered ? 1.024 : 1.0)
-            let liftY: CGFloat = isHovered && !isPressed ? -2.0 : 0.0
+            let scale: CGFloat = moves ? (isPressed ? 0.976 : (isHovered ? 1.024 : 1.0)) : 1
+            let liftY: CGFloat = moves && isHovered && !isPressed ? -2 : 0
 
             let w = max(1, posterTransformView.bounds.width)
             let h = max(1, posterTransformView.bounds.height)
@@ -1171,11 +1284,14 @@ final class PosterCardInteractiveView: NSView {
             }
 
             CATransaction.begin()
-            if animated {
-                CATransaction.setAnimationDuration(0.14)
+            if animated && moves {
+                CATransaction.setAnimationDuration(0.12)
                 CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
             } else {
                 CATransaction.setDisableActions(true)
+                posterTransformView.layer?.removeAnimation(forKey: "transform")
+                hoverSheenLayer?.removeAnimation(forKey: "opacity")
+                borderLayer.removeAllAnimations()
             }
             borderLayer.borderColor = borderCol
             borderLayer.borderWidth = borderW
@@ -1221,9 +1337,11 @@ final class PosterCardInteractiveView: NSView {
             }
             self.badge = badge
         }
+        let wasHidden = badge.isHidden
         badge.isHidden = false
+        let oldWidth = badge.pillWidth
         badge.configure(text: item.category.statusLabel(for: item.status, in: language), status: item.status)
-        needsLayout = true
+        if wasHidden || oldWidth != badge.pillWidth { needsLayout = true }
     }
 
     override func layout() {

@@ -5,31 +5,9 @@ import Testing
 @MainActor
 struct PosterGridTests {
     @Test func testNewRowsMountBeforeEnteringViewportAndKeepTheirViews() {
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 840, height: 640))
-        scroll.contentView.postsFrameChangedNotifications = true
-        let grid = PosterGridView(frame: scroll.bounds)
-        scroll.documentView = grid
-
-        let posters = (0..<250).map { index in
-            LibraryPoster(MediaItem(title: "Item \(index)", category: .game, status: .active,
-                                    coverFileName: "test-cover-\(index).jpg"), language: .en)
-        }
-        let section = ShelfSectionModel(status: nil, title: "", totalCount: posters.count, items: posters)
-        let model = NativePosterGrid(sections: [section], collapsedShelves: [], selectedItemID: nil,
-            showStatusBadges: false, posterScale: 1, language: .en, scrollResetToken: 0,
-            onSelectItem: { _ in }, onEnsureSelectItem: { _ in }, onDeselectAll: {},
-            onDoubleClickEdit: { _ in }, onRequestReplaceCover: { _ in },
-            onToggleSectionCollapse: { _ in }, onQuickAddInSection: { _ in },
-            onChangeStatus: { _, _ in }, onChangeRating: { _, _ in }, onUpdateCoverFileName: { _, _ in },
-            onImportCover: { _, _ in }, onDeleteItem: { _ in }, onShowToast: { _ in })
-        let coordinator = model.makeCoordinator()
-        coordinator.gridView = grid
-        coordinator.scrollView = scroll
-        grid.coordinator = coordinator
-        coordinator.installScrollObservers(for: scroll)
+        let fixture = makeGrid()
+        let (scroll, grid, coordinator, posters) = fixture
         defer { coordinator.detach() }
-        coordinator.update(model)
-
         let clip = scroll.contentView
         let initial = grid.subviews.compactMap { $0 as? PosterCardInteractiveView }
         #expect(initial.count < 40)
@@ -51,5 +29,55 @@ struct PosterGridTests {
         let last = grid.subviews.compactMap { $0 as? PosterCardInteractiveView }
         #expect(last.count < 40)
         #expect(last.contains { $0.item?.id == posters.last?.id && $0.frame.intersects(clip.bounds) })
+    }
+
+    @Test func testReservingSpaceForDetailsKeepsCardSizeAndSelectedRow() throws {
+        let (scroll, grid, coordinator, posters) = makeGrid()
+        defer { coordinator.detach() }
+        let clip = scroll.contentView
+        clip.scroll(to: NSPoint(x: 0, y: 1400))
+        scroll.reflectScrolledClipView(clip)
+        let id = posters[23].id
+        let card = try #require(grid.subviews.compactMap { $0 as? PosterCardInteractiveView }
+            .first { $0.item?.id == id })
+        let offset = card.frame.minY - clip.bounds.minY
+        let size = card.frame.size
+        #expect(card.frame.intersects(clip.bounds))
+        coordinator.select(id)
+
+        scroll.setFrameSize(NSSize(width: 519, height: 640))
+        scroll.tile()
+        let resized = try #require(grid.subviews.compactMap { $0 as? PosterCardInteractiveView }
+            .first { $0.item?.id == id })
+        #expect(clip.bounds.width < 600)
+        #expect(resized.frame.size == size)
+        #expect(abs(resized.frame.minY - clip.bounds.minY - offset) <= 1)
+    }
+
+    private func makeGrid() -> (NSScrollView, PosterGridView, NativePosterGrid.Coordinator, [LibraryPoster]) {
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 840, height: 640))
+        scroll.contentView.postsFrameChangedNotifications = true
+        let grid = PosterGridView(frame: scroll.bounds)
+        scroll.documentView = grid
+
+        let posters = (0..<250).map { index in
+            LibraryPoster(MediaItem(title: "Item \(index)", category: .game, status: .active,
+                                    coverFileName: "test-cover-\(index).jpg"), language: .en)
+        }
+        let section = ShelfSectionModel(status: nil, title: "", totalCount: posters.count, items: posters)
+        let model = NativePosterGrid(sections: [section], collapsedShelves: [], selectedItemID: nil,
+            showStatusBadges: false, posterScale: 1, posterWidthBasis: 840, language: .en, scrollResetToken: 0,
+            onSelectItem: { _ in }, onEnsureSelectItem: { _ in }, onDeselectAll: {},
+            onDoubleClickEdit: { _ in }, onRequestReplaceCover: { _ in },
+            onToggleSectionCollapse: { _ in }, onQuickAddInSection: { _ in },
+            onChangeStatus: { _, _ in }, onChangeRating: { _, _ in }, onUpdateCoverFileName: { _, _ in },
+            onImportCover: { _, _ in }, onDeleteItem: { _ in }, onShowToast: { _ in })
+        let coordinator = model.makeCoordinator()
+        coordinator.gridView = grid
+        coordinator.scrollView = scroll
+        grid.coordinator = coordinator
+        coordinator.installScrollObservers(for: scroll)
+        coordinator.update(model)
+        return (scroll, grid, coordinator, posters)
     }
 }

@@ -105,16 +105,18 @@ struct CoverPickerSheet: View {
                     .frame(width: 156, height: 234)
                     .shadow(color: .black.opacity(0.28), radius: 12, x: 0, y: 6)
 
-                CoverArtworkView(
-                    title: itemTitle.isEmpty ? language.tr("封面预览", "Cover Preview") : itemTitle,
-                    category: category,
-                    subtag: subtag,
-                    coverFileName: previewCoverFileName,
-                    paletteSeed: paletteSeed,
-                    language: language,
-                    cornerRadius: 12,
-                    isHovered: isDropTargeted
-                )
+                CoverPreview(fileName: previewCoverFileName) { artwork in
+                    CoverArtworkView(
+                        title: itemTitle.isEmpty ? language.tr("封面预览", "Cover Preview") : itemTitle,
+                        category: category,
+                        subtag: subtag,
+                        image: artwork?.image,
+                        paletteSeed: paletteSeed,
+                        language: language,
+                        cornerRadius: 12,
+                        isHovered: isDropTargeted
+                    )
+                }
                 .frame(width: 156, height: 234)
 
                 if isDropTargeted {
@@ -601,6 +603,7 @@ private struct CoverCandidateCard: View {
     var language: AppLanguage = .zh
     let onSelect: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var loadedImage: CGImage? = nil
     @State private var loadFailed: Bool = false
     @State private var isHovered: Bool = false
@@ -649,8 +652,8 @@ private struct CoverCandidateCard: View {
                         .background(Color.black.opacity(0.65), in: Capsule())
                         .padding(6)
                 }
-                .scaleEffect(isHovered ? 1.02 : 1.0)
-                .animation(.easeOut(duration: 0.14), value: isHovered)
+                .scaleEffect(!reduceMotion && isHovered ? 1.02 : 1.0)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isHovered)
 
                 Text(candidate.title)
                     .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))

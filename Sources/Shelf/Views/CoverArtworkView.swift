@@ -1,22 +1,40 @@
 import AppKit
 import SwiftUI
 
+struct CoverPreview<Content: View>: View {
+    let fileName: String?
+    @ViewBuilder let content: (CoverManager.Artwork?) -> Content
+    @State private var loaded: (name: String, artwork: CoverManager.Artwork?)?
+
+    private var artwork: CoverManager.Artwork? {
+        guard let name = fileName, !name.isEmpty else { return nil }
+        if let loaded, loaded.name == name { return loaded.artwork }
+        return CoverManager.shared.cachedArtwork(for: .preview(name))
+    }
+
+    var body: some View {
+        content(artwork)
+            .task(id: fileName) {
+                guard let name = fileName, !name.isEmpty else {
+                    loaded = nil
+                    return
+                }
+                let artwork = await CoverManager.shared.artwork(for: .preview(name))
+                guard !Task.isCancelled else { return }
+                loaded = (name, artwork)
+            }
+    }
+}
+
 struct CoverArtworkView: View {
     let title: String
     let category: MediaCategory
     let subtag: String
-    let coverFileName: String?
+    let image: CGImage?
     let paletteSeed: Int
     var language: AppLanguage = .zh
     var cornerRadius: CGFloat = 10
     var isHovered: Bool = false
-    @State private var loadedCover: (name: String, image: CGImage)?
-
-    private var image: CGImage? {
-        guard let name = coverFileName, !name.isEmpty else { return nil }
-        if let loadedCover, loadedCover.name == name { return loadedCover.image }
-        return CoverManager.shared.cachedArtwork(for: .preview(name))?.image
-    }
 
     private struct Palette {
         let top: Color
@@ -110,15 +128,6 @@ struct CoverArtworkView: View {
                     )
                     .allowsHitTesting(false)
             )
-            .task(id: coverFileName) {
-                guard let name = coverFileName, !name.isEmpty else {
-                    loadedCover = nil
-                    return
-                }
-                let image = await CoverManager.shared.artwork(for: .preview(name))?.image
-                guard !Task.isCancelled else { return }
-                loadedCover = image.map { (name, $0) }
-            }
     }
 
     private var staticCoverLayer: some View {

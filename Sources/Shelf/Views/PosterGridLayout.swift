@@ -21,6 +21,7 @@ final class PosterGridLayout {
     private var geometry: [Geometry] = []
     private(set) var contentHeight: CGFloat = 0
     private var preparedWidth: CGFloat?
+    private var preparedWidthBasis: CGFloat?
     private var scale = 1.0
     private var columns = 1
     private var cardWidth: CGFloat = 0
@@ -30,23 +31,30 @@ final class PosterGridLayout {
     private let padding: CGFloat = 24
 
     @discardableResult
-    func update(sections: [ShelfSectionModel], scale: Double, width: CGFloat) -> Bool {
+    func update(sections: [ShelfSectionModel], scale: Double, width: CGFloat,
+                posterWidthBasis: CGFloat? = nil) -> Bool {
         let metrics = sections.map {
             Section(hasHeader: $0.status != nil, collapsed: $0.isCollapsed, itemCount: $0.visibleCount)
         }
-        guard self.sections != metrics || self.scale != scale || preparedWidth != width else { return false }
+        guard self.sections != metrics || self.scale != scale || preparedWidth != width
+                || preparedWidthBasis != posterWidthBasis else { return false }
         self.sections = metrics
         self.scale = scale
         preparedWidth = width
+        preparedWidthBasis = posterWidthBasis
 
         let minWidth = round(148 * scale)
         let maxWidth = round(186 * scale)
         let spacing = round(20 * max(0.85, scale * 0.95))
         let rowSpacing = round(24 * max(0.88, scale * 0.95))
+        // Opening the drawer changes how many cards fit, while their size stays fixed.
+        let fullWidth = max(width, posterWidthBasis ?? width)
+        let fullAvailable = max(minWidth, max(240, fullWidth) - padding * 2)
+        let fullColumns = max(1, Int((fullAvailable + spacing) / (minWidth + spacing)))
+        let fittedWidth = floor((fullAvailable - CGFloat(fullColumns - 1) * spacing) / CGFloat(fullColumns))
         let available = max(minWidth, max(240, width) - padding * 2)
-        columns = max(1, Int((available + spacing) / (minWidth + spacing)))
-        let fittedWidth = floor((available - CGFloat(columns - 1) * spacing) / CGFloat(columns))
-        cardWidth = min(columns == 1 ? maxWidth : maxWidth + 24, fittedWidth)
+        cardWidth = min(available, fullColumns == 1 ? maxWidth : maxWidth + 24, fittedWidth)
+        columns = max(1, Int((available + spacing) / (cardWidth + spacing)))
         cellHeight = round(cardWidth * 1.5) + 40
         columnStep = cardWidth + spacing
         rowStep = cellHeight + rowSpacing

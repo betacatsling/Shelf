@@ -10,6 +10,7 @@ struct MainWindowView: View {
     @State private var coverReplacingItem: MediaItem? = nil
     @State private var quickAddPresetStatus: TrackingStatus? = nil
     @State private var preparedLibrary: (LibraryQuery.Request, LibraryProjection)?
+    @State private var draggedPosterScale: Double?
 
     private var lang: AppLanguage { store.language }
 
@@ -53,66 +54,30 @@ struct MainWindowView: View {
         let prepared = backgroundRequest == nil ? nil : preparedLibrary
         let library = backgroundRequest == nil ? store.projection() : (prepared?.1 ?? .empty)
         let options = prepared?.0.options ?? request.options
+        let showsDetails = store.selectedItemID.flatMap(store.item(withID:)) != nil
 
         NavigationSplitView {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 195, ideal: 215, max: 260)
         } detail: {
-            HStack(spacing: 0) {
-                VStack(spacing: 0) {
+            GeometryReader { workspace in
+                VStack(alignment: .leading, spacing: 0) {
                     shelfTopControlBar(counts: library.statusCounts)
                     Divider()
 
-                    ZStack(alignment: .bottom) {
-                        libraryCanvas(library, options: options, waiting: backgroundRequest != nil && prepared == nil)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                        if let toast = store.toastMessage {
-                            HStack(spacing: 8) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
-                                Text(toast)
-                                    .font(.system(size: 12.5, weight: .medium))
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 9)
-                            .background(
-                                Capsule()
-                                    .fill(Color(nsColor: .controlBackgroundColor))
-                            )
-                            .overlay(
-                                Capsule()
-                                    .strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.8)
-                            )
-                            .shadow(color: .black.opacity(0.22), radius: 10, x: 0, y: 4)
-                            .padding(.bottom, 14)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                            .allowsHitTesting(false)
-                        }
-                    }
+                    libraryCanvas(library, options: options, waiting: backgroundRequest != nil && prepared == nil,
+                                  posterWidthBasis: workspace.size.width)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay(alignment: .bottom) { LibraryToastView() }
 
                     Divider()
                     bottomStatusBar(visibleCount: library.count)
                 }
-
-                if let selectedItem = store.selectedItem {
-                    Divider()
-                    ItemDetailPanel(
-                        item: selectedItem,
-                        onReplaceCover: {
-                            coverReplacingItem = selectedItem
-                        },
-                        onClose: {
-                            withAnimation(.snappy(duration: 0.20)) {
-                                store.selectedItemID = nil
-                            }
-                        }
-                    )
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-                }
+                .modifier(DetailDrawerLayout(workspaceWidth: workspace.size.width,
+                                             initialPosterID: library.sections.first?.items.first?.id,
+                                             onReplaceCover: { coverReplacingItem = $0 }))
             }
             .background(Color(nsColor: .windowBackgroundColor))
-            .animation(.snappy(duration: 0.20), value: store.selectedItemID != nil)
             .navigationTitle(store.selectedDestination.title(in: lang))
             .navigationSubtitle(itemCountText(library.count, compact: true))
             .searchable(
@@ -121,7 +86,7 @@ struct MainWindowView: View {
                 prompt: lang.tr("搜索名称、标签或备注…", "Search titles, tags, or notes…")
             )
             .toolbar {
-                toolbarContent
+                toolbarContent(showsDetails: showsDetails)
             }
         }
         .sheet(isPresented: $showAddSheet) {
@@ -207,25 +172,18 @@ struct MainWindowView: View {
                     verticalPadding: 5.5,
                     equalWidthSegments: false
                 )
-            }
-            .layoutPriority(1)
 
-            Spacer(minLength: 6)
+                statusFilterMenu(counts: counts)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
 
             ShelfSortControl(
                 sortField: store.sortField,
                 sortAscending: store.sortAscending,
                 language: lang,
-                onSelectField: { field in
-                    withAnimation(.snappy(duration: 0.18)) {
-                        store.selectSortField(field)
-                    }
-                },
-                onSetAscending: { asc in
-                    withAnimation(.snappy(duration: 0.18)) {
-                        store.sortAscending = asc
-                    }
-                }
+                onSelectField: { store.selectSortField($0) },
+                onSetAscending: { store.sortAscending = $0 }
             )
 
             Button {
@@ -257,6 +215,31 @@ struct MainWindowView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
+    private func statusFilterMenu(counts: [TrackingStatus: Int]) -> some View {
+        let segments = statusSegments(counts: counts, compactLabels: false)
+        return Menu {
+            ForEach(segments) { segment in
+                let title = segment.count.map { "\(segment.title) (\($0))" } ?? segment.title
+                Button {
+                    store.statusFilter = segment.value
+                } label: {
+                    if store.statusFilter == segment.value {
+                        Label(title, systemImage: "checkmark")
+                    } else {
+                        Text(title)
+                    }
+                }
+            }
+        } label: {
+            Label(lang.tr("按状态筛选", "Filter by Status"), systemImage: "line.3.horizontal.decrease")
+                .labelStyle(.iconOnly)
+        }
+        .controlSize(.small)
+        .fixedSize()
+        .accessibilityValue(segments.first { $0.value == store.statusFilter }?.title ?? "")
+        .help(lang.tr("按状态筛选", "Filter by Status"))
+    }
+
     private func statusSegments(
         counts: [TrackingStatus: Int]?,
         compactLabels: Bool
@@ -285,7 +268,8 @@ struct MainWindowView: View {
 
     // MARK: - Library Canvas
 
-    private func libraryCanvas(_ library: LibraryProjection, options: LibraryQuery.Options, waiting: Bool) -> some View {
+    private func libraryCanvas(_ library: LibraryProjection, options: LibraryQuery.Options, waiting: Bool,
+                               posterWidthBasis: CGFloat) -> some View {
         let tags = library.subtags
         return VStack(spacing: 0) {
             if let cat = activeCategory, (tags.count > 1 || store.subtagFilter != nil) {
@@ -312,31 +296,18 @@ struct MainWindowView: View {
                     collapsedShelves: collapsedShelves,
                     selectedItemID: store.selectedItemID,
                     showStatusBadges: library.showStatusBadges,
-                    posterScale: posterScale,
+                    posterScale: draggedPosterScale ?? posterScale,
+                    posterWidthBasis: posterWidthBasis,
                     language: options.language,
                     scrollResetToken: scrollResetToken(for: options),
                     onSelectItem: { id in
-                        withAnimation(.snappy(duration: 0.18)) {
-                            if store.selectedItemID == id {
-                                store.selectedItemID = nil
-                            } else {
-                                store.selectedItemID = id
-                            }
-                        }
+                        store.selectedItemID = store.selectedItemID == id ? nil : id
                     },
                     onEnsureSelectItem: { id in
-                        if store.selectedItemID != id {
-                            withAnimation(.snappy(duration: 0.18)) {
-                                store.selectedItemID = id
-                            }
-                        }
+                        if store.selectedItemID != id { store.selectedItemID = id }
                     },
                     onDeselectAll: {
-                        if store.selectedItemID != nil {
-                            withAnimation(.snappy(duration: 0.18)) {
-                                store.selectedItemID = nil
-                            }
-                        }
+                        if store.selectedItemID != nil { store.selectedItemID = nil }
                     },
                     onDoubleClickEdit: { id in
                         editingItem = store.item(withID: id)
@@ -499,7 +470,20 @@ struct MainWindowView: View {
                 .buttonStyle(.plain)
                 .help(lang.tr("缩小海报 (⌘-)", "Zoom out (⌘-)"))
 
-                Slider(value: $posterScale, in: 0.78...1.36)
+                Slider(value: Binding(
+                    get: { draggedPosterScale ?? posterScale },
+                    set: { value in
+                        if draggedPosterScale != nil { draggedPosterScale = value }
+                        else { posterScale = value }
+                    }
+                ), in: 0.78...1.36, onEditingChanged: { editing in
+                    if editing {
+                        draggedPosterScale = posterScale
+                    } else if let value = draggedPosterScale {
+                        posterScale = value
+                        draggedPosterScale = nil
+                    }
+                })
                     .frame(width: 96)
                     .controlSize(.small)
                     .help(lang.tr("拖动调整海报尺寸", "Adjust poster size"))
@@ -525,18 +509,15 @@ struct MainWindowView: View {
     // MARK: - Window Toolbar
 
     @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        if store.selectedItem != nil {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    withAnimation(.snappy(duration: 0.20)) {
-                        store.selectedItemID = nil
-                    }
-                } label: {
-                    Label(lang.tr("收起详情栏", "Hide Details"), systemImage: "sidebar.right")
-                }
-                .help(lang.tr("收起右侧详情面板", "Hide right details panel"))
+    private func toolbarContent(showsDetails: Bool) -> some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                store.selectedItemID = nil
+            } label: {
+                Label(lang.tr("收起详情栏", "Hide Details"), systemImage: "sidebar.right")
             }
+            .disabled(!showsDetails)
+            .help(lang.tr("收起右侧详情面板", "Hide right details panel"))
         }
     }
 
@@ -552,5 +533,32 @@ struct MainWindowView: View {
             return st
         }
         return .active
+    }
+}
+
+private struct LibraryToastView: View {
+    @Environment(LibraryStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            if let toast = store.toastMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text(toast)
+                        .font(.system(size: 12.5, weight: .medium))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 9)
+                .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
+                .overlay { Capsule().strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.8) }
+                .shadow(color: .black.opacity(0.22), radius: 10, x: 0, y: 4)
+                .padding(.bottom, 14)
+                .transition(.opacity)
+            }
+        }
+        .allowsHitTesting(false)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: store.toastMessage != nil)
     }
 }

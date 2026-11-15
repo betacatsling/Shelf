@@ -37,6 +37,7 @@ struct ShelfButtonStyle: ButtonStyle {
         let fullWidth: Bool
 
         @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
         @State private var isHovered = false
 
         var body: some View {
@@ -54,10 +55,10 @@ struct ShelfButtonStyle: ButtonStyle {
                         .strokeBorder(borderColor, lineWidth: variant == .subtle ? 0 : 0.8)
                 )
                 .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                .scaleEffect(configuration.isPressed ? 0.975 : 1.0)
+                .scaleEffect(!reduceMotion && configuration.isPressed ? 0.975 : 1.0)
                 .opacity(isEnabled ? 1.0 : 0.45)
-                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-                .animation(.easeOut(duration: 0.14), value: isHovered)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isHovered)
                 .onHover { hovering in
                     isHovered = hovering
                 }
@@ -214,11 +215,7 @@ struct ShelfSegmentedControl<Option: Hashable>: View {
                     verticalPadding: verticalPadding,
                     equalWidth: equalWidthSegments
                 ) {
-                    if selection != segment.value {
-                        withAnimation(.snappy(duration: 0.18)) {
-                            selection = segment.value
-                        }
-                    }
+                    if selection != segment.value { selection = segment.value }
                 }
             }
         }
@@ -241,6 +238,7 @@ struct ShelfSegmentedControl<Option: Hashable>: View {
         let onTap: () -> Void
 
         @State private var isHovered = false
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
         var body: some View {
             Button(action: onTap) {
@@ -283,6 +281,7 @@ struct ShelfSegmentedControl<Option: Hashable>: View {
                 .background(
                     RoundedRectangle(cornerRadius: 6.5, style: .continuous)
                         .fill(cellBackground)
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isSelected)
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 6.5, style: .continuous))
             }
@@ -341,9 +340,7 @@ struct ShelfSortControl: View {
                 .frame(width: 0.8, height: 16)
 
             Button {
-                withAnimation(.snappy(duration: 0.18)) {
-                    onSetAscending(!sortAscending)
-                }
+                onSetAscending(!sortAscending)
             } label: {
                 Image(systemName: sortAscending ? "arrow.up" : "arrow.down")
                     .font(.system(size: 11, weight: .semibold))

@@ -6,7 +6,6 @@ struct SidebarView: View {
     private var lang: AppLanguage { store.language }
 
     var body: some View {
-        @Bindable var store = store
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -88,7 +87,7 @@ struct SidebarView: View {
                 Divider()
 
                 HStack(spacing: 6) {
-                    CompactLanguageToggle(language: $store.language)
+                    CompactLanguageToggle(language: lang, onToggle: { store.toggleLanguage() })
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 12)
@@ -160,15 +159,12 @@ private struct SidebarRowButton: View {
 }
 
 private struct CompactLanguageToggle: View {
-    @Binding var language: AppLanguage
+    let language: AppLanguage
+    let onToggle: () -> Void
     @State private var isHovered = false
 
     var body: some View {
-        Button {
-            withAnimation(.snappy(duration: 0.16)) {
-                language = (language == .zh) ? .en : .zh
-            }
-        } label: {
+        Button(action: onToggle) {
             HStack(spacing: 4.5) {
                 Image(systemName: "globe")
                     .font(.system(size: 10.5, weight: .medium))

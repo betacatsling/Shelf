@@ -1,7 +1,6 @@
 import AppKit
 import Foundation
 import Observation
-import SwiftUI
 import UniformTypeIdentifiers
 
 @MainActor
@@ -107,9 +106,7 @@ final class LibraryStore {
     }
 
     func toggleLanguage() {
-        withAnimation(.snappy(duration: 0.16)) {
-            language = (language == .zh) ? .en : .zh
-        }
+        language = (language == .zh) ? .en : .zh
     }
 
     func selectDestination(_ destination: SidebarDestination) {
@@ -335,15 +332,11 @@ final class LibraryStore {
 
     func showToast(_ message: String) {
         toastTask?.cancel()
-        withAnimation(.easeOut(duration: 0.20)) {
-            toastMessage = message
-        }
+        toastMessage = message
         toastTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(2200))
             guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.20)) {
-                self?.toastMessage = nil
-            }
+            self?.toastMessage = nil
         }
     }
 

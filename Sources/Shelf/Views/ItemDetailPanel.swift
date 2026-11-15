@@ -4,11 +4,13 @@ import UniformTypeIdentifiers
 
 struct ItemDetailPanel: View {
     let item: MediaItem
+    let isShowing: Bool
     let onReplaceCover: () -> Void
     let onClose: () -> Void
 
     @Environment(LibraryStore.self) private var store
-    @State private var draftNotes: String = ""
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var draftNotes: String
     @State private var isPosterHovered = false
     @State private var isTitleHovered = false
     @State private var isCategoryHovered = false
@@ -25,11 +27,12 @@ struct ItemDetailPanel: View {
     @State private var showSubtagPopover = false
     @State private var draftSubtag: String = ""
 
-    @State private var loadedBackground: (name: String, image: CGImage)?
-
-    private var backgroundImage: CGImage? {
-        guard let name = item.coverFileName, let loadedBackground, loadedBackground.name == name else { return nil }
-        return loadedBackground.image
+    init(item: MediaItem, isShowing: Bool, onReplaceCover: @escaping () -> Void, onClose: @escaping () -> Void) {
+        self.item = item
+        self.isShowing = isShowing
+        self.onReplaceCover = onReplaceCover
+        self.onClose = onClose
+        _draftNotes = State(initialValue: item.notes)
     }
 
     private var lang: AppLanguage { store.language }
@@ -42,38 +45,25 @@ struct ItemDetailPanel: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                heroHeader
-
-                VStack(alignment: .leading, spacing: 20) {
-                    statusSwitcherSection
-                    ratingSection
-                    notesSection
-                    metadataFooter
+            LazyVStack(alignment: .leading, spacing: 20) {
+                CoverPreview(fileName: item.coverFileName) { artwork in
+                    heroHeader(artwork)
                 }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 22)
+                statusSwitcherSection.padding(.horizontal, 20)
+                ratingSection.padding(.horizontal, 20)
+                notesSection.padding(.horizontal, 20)
+                metadataFooter.padding(.horizontal, 20)
             }
+            .padding(.bottom, 22)
         }
         .frame(width: 320)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear {
-            draftNotes = item.notes
-        }
-        .task(id: item.coverFileName) {
-            guard let name = item.coverFileName, !name.isEmpty else {
-                loadedBackground = nil
-                return
-            }
-            let image = await CoverManager.shared.artwork(for: .preview(name))?.image
-            guard !Task.isCancelled else { return }
-            loadedBackground = image.map { (name, $0) }
-        }
         .onChange(of: item.id) { _, _ in
             draftNotes = item.notes
-            showTitlePopover = false
-            showCategoryPopover = false
-            showSubtagPopover = false
+            closePopovers()
+        }
+        .onChange(of: isShowing) { _, showing in
+            if !showing { closePopovers() }
         }
         .onChange(of: item.notes) { _, newValue in
             if draftNotes != newValue {
@@ -92,20 +82,27 @@ struct ItemDetailPanel: View {
         }
     }
 
+    private func closePopovers() {
+        showTitlePopover = false
+        showCategoryPopover = false
+        showSubtagPopover = false
+        showDeleteConfirm = false
+    }
+
     // MARK: - Hero Header
 
-    private var heroHeader: some View {
+    private func heroHeader(_ artwork: CoverManager.Artwork?) -> some View {
         let shownTitle = item.displayTitle(in: lang)
 
         return ZStack(alignment: .topTrailing) {
             ZStack {
-                if let background = backgroundImage {
+                if let background = artwork?.backdrop {
                     Image(decorative: background, scale: 1)
                         .resizable()
+                        .interpolation(.high)
                         .scaledToFill()
                         .frame(maxWidth: .infinity)
                         .frame(height: 245)
-                        .blur(radius: 30)
                         .opacity(0.38)
                         .clipped()
                 } else {
@@ -145,7 +142,7 @@ struct ItemDetailPanel: View {
                         title: shownTitle,
                         category: item.category,
                         subtag: item.subtag,
-                        coverFileName: item.coverFileName,
+                        image: artwork?.image,
                         paletteSeed: item.paletteSeed,
                         language: lang,
                         cornerRadius: 12,
@@ -186,7 +183,7 @@ struct ItemDetailPanel: View {
                             )
                     }
                 }
-                .animation(.easeOut(duration: 0.14), value: isPosterHovered)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: isPosterHovered)
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .onTapGesture(perform: onReplaceCover)
                 .onHover { isPosterHovered = $0 }

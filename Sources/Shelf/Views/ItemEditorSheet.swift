@@ -197,16 +197,18 @@ struct ItemEditorSheet: View {
                     .frame(width: 164, height: 246)
                     .shadow(color: .black.opacity(0.28), radius: 12, x: 0, y: 6)
 
-                CoverArtworkView(
-                    title: previewDisplayTitle,
-                    category: category,
-                    subtag: subtag,
-                    coverFileName: coverFileName,
-                    paletteSeed: paletteSeed,
-                    language: language,
-                    cornerRadius: 12,
-                    isHovered: isDropTargeted
-                )
+                CoverPreview(fileName: coverFileName) { artwork in
+                    CoverArtworkView(
+                        title: previewDisplayTitle,
+                        category: category,
+                        subtag: subtag,
+                        image: artwork?.image,
+                        paletteSeed: paletteSeed,
+                        language: language,
+                        cornerRadius: 12,
+                        isHovered: isDropTargeted
+                    )
+                }
                 .frame(width: 164, height: 246)
 
                 if isDropTargeted {

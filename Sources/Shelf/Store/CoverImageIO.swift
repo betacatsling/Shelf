@@ -44,6 +44,19 @@ enum CoverImageIO {
         return context.makeImage()
     }
 
+    /// A tiny, filtered texture gives the detail header soft color without a live blur pass.
+    static func previewBackdrop(_ image: CGImage) -> CGImage? {
+        let width = 12, height = 9
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        let scale = max(CGFloat(width) / CGFloat(image.width), CGFloat(height) / CGFloat(image.height))
+        let w = CGFloat(image.width) * scale, h = CGFloat(image.height) * scale
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: (CGFloat(width) - w) / 2, y: (CGFloat(height) - h) / 2, width: w, height: h))
+        return context.makeImage()
+    }
+
     /// Core Animation can share this backing directly with the window server.
     static func displaySurface(_ image: CGImage) -> IOSurfaceRef? {
         let width = image.width, height = image.height

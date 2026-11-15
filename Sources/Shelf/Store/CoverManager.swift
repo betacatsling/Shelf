@@ -29,15 +29,21 @@ final class CoverManager {
     struct Artwork: @unchecked Sendable {
         // A surface is filled on a worker and then treated as immutable.
         let image: CGImage?
+        let backdrop: CGImage?
         private let surface: IOSurfaceRef?
 
         var contents: Any? { surface.map { $0 as Any } ?? image }
-        var bytes: Int { (image.map { $0.bytesPerRow * $0.height } ?? 0) + (surface.map(IOSurfaceGetAllocSize) ?? 0) }
+        var bytes: Int {
+            (image.map { $0.bytesPerRow * $0.height } ?? 0)
+                + (backdrop.map { $0.bytesPerRow * $0.height } ?? 0)
+                + (surface.map(IOSurfaceGetAllocSize) ?? 0)
+        }
 
         fileprivate init(_ image: CGImage, forPosterWall: Bool) {
             let surface = forPosterWall ? CoverImageIO.displaySurface(image) : nil
             self.surface = surface
             self.image = surface == nil ? image : nil
+            backdrop = forPosterWall ? nil : CoverImageIO.previewBackdrop(image)
         }
     }
 
