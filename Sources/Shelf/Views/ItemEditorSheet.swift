@@ -3,9 +3,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ItemEditorSheet: View {
+    let store: LibraryStore
     let existingItem: MediaItem?
     let defaultCategory: MediaCategory
     let defaultStatus: TrackingStatus
+    let defaultTags: [String]
     let language: AppLanguage
     let onSave: (MediaItem) -> Void
 
@@ -15,7 +17,7 @@ struct ItemEditorSheet: View {
     @State private var titleEN: String = ""
     @State private var category: MediaCategory = .game
     @State private var status: TrackingStatus = .active
-    @State private var subtag: String = ""
+    @State private var selectedTags: [String] = []
     @State private var rating: Int = 0
     @State private var notes: String = ""
     @State private var coverFileName: String? = nil
@@ -37,15 +39,19 @@ struct ItemEditorSheet: View {
     }
 
     init(
+        store: LibraryStore,
         existingItem: MediaItem? = nil,
         defaultCategory: MediaCategory = .game,
         defaultStatus: TrackingStatus = .active,
+        defaultTags: [String] = [],
         language: AppLanguage = .zh,
         onSave: @escaping (MediaItem) -> Void
     ) {
+        self.store = store
         self.existingItem = existingItem
         self.defaultCategory = defaultCategory
         self.defaultStatus = defaultStatus
+        self.defaultTags = defaultTags
         self.language = language
         self.onSave = onSave
     }
@@ -153,7 +159,7 @@ struct ItemEditorSheet: View {
                 titleEN = item.titleEN
                 category = item.category
                 status = item.status
-                subtag = item.subtag
+                selectedTags = item.tags
                 rating = item.rating
                 notes = item.notes
                 coverFileName = item.coverFileName
@@ -161,6 +167,7 @@ struct ItemEditorSheet: View {
             } else {
                 category = defaultCategory
                 status = defaultStatus
+                selectedTags = MediaCategory.normalizeTags(defaultTags)
             }
             focusedField = (language == .en) ? .enTitle : .zhTitle
         }
@@ -173,7 +180,7 @@ struct ItemEditorSheet: View {
             CoverPickerSheet(
                 itemTitle: queryTitle,
                 category: category,
-                subtag: subtag,
+                subtag: selectedTags.first ?? "",
                 initialCoverFileName: coverFileName,
                 paletteSeed: paletteSeed,
                 language: language
@@ -201,7 +208,7 @@ struct ItemEditorSheet: View {
                     CoverArtworkView(
                         title: previewDisplayTitle,
                         category: category,
-                        subtag: subtag,
+                        subtag: selectedTags.first ?? "",
                         image: artwork?.image,
                         paletteSeed: paletteSeed,
                         language: language,
@@ -408,14 +415,6 @@ struct ItemEditorSheet: View {
                     selection: $category,
                     verticalPadding: 6
                 )
-                .onChange(of: category) { _, newCategory in
-                    let otherPresets = MediaCategory.allCases
-                        .filter { $0 != newCategory }
-                        .flatMap(\.presetTags)
-                    if otherPresets.contains(subtag) && !newCategory.presetTags.contains(subtag) {
-                        subtag = ""
-                    }
-                }
             }
 
             // 3. Status
@@ -437,30 +436,13 @@ struct ItemEditorSheet: View {
                 )
             }
 
-            // 4. Optional Subtag
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text(category.subtagFieldTitle(in: language))
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    TextField(language.tr("自定义", "Custom"), text: $subtag)
-                        .textFieldStyle(.roundedBorder)
-                        .controlSize(.small)
-                        .frame(width: 128)
-                }
-
-                HStack(spacing: 6) {
-                    ForEach(category.presetTags, id: \.self) { tag in
-                        ShelfChipButton(
-                            title: MediaCategory.localizedSubtag(tag, in: language),
-                            isSelected: subtag == tag
-                        ) {
-                            subtag = (subtag == tag) ? "" : tag
-                        }
-                    }
-                }
-            }
+            // 4. Unified Tags
+            InlineTagField(
+                store: store,
+                category: category,
+                selectedTags: $selectedTags,
+                language: language
+            )
 
             // 5. Rating
             HStack {
@@ -573,7 +555,7 @@ struct ItemEditorSheet: View {
             existing.titleEN = finalEN
             existing.category = category
             existing.status = status
-            existing.subtag = subtag.trimmingCharacters(in: .whitespacesAndNewlines)
+            existing.tags = MediaCategory.normalizeTags(selectedTags)
             existing.rating = rating
             existing.notes = notes
             existing.coverFileName = coverFileName
@@ -586,7 +568,7 @@ struct ItemEditorSheet: View {
                 titleEN: finalEN,
                 category: category,
                 status: status,
-                subtag: subtag.trimmingCharacters(in: .whitespacesAndNewlines),
+                tags: selectedTags,
                 rating: rating,
                 notes: notes,
                 coverFileName: coverFileName,

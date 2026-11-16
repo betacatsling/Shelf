@@ -6,6 +6,9 @@ A native macOS vertical-poster media tracker with one-click **简体中文 / Eng
 
 ## 下载安装 / Installation
 
+Windows 用户请见 [Windows 版安装、迁移与构建说明](./Windows/README.md)。
+On Windows, see the [Windows setup, migration, and build guide](./Windows/README.md).
+
 前往 **[最新发布](https://github.com/betacatsling/Shelf/releases/latest)** 下载 Apple Silicon 安装包。
 
 1. 双击打开 `.dmg` 镜像，将 **作品库（`Shelf.app`）** 拖入右侧 `Applications` 文件夹即可安装（要求 macOS 14.0+，Apple Silicon）。
@@ -13,6 +16,8 @@ A native macOS vertical-poster media tracker with one-click **简体中文 / Eng
    ```bash
    xattr -cr /Applications/Shelf.app
    ```
+
+Linux 版支持 Fedora RPM 和源码运行。详见 [Linux 安装与迁移 / Linux installation and migration](./linux/README.md)。
 
 ## 核心特性 / Features
 

@@ -2,17 +2,18 @@
 name: shelf-library
 description: >-
   Add, update, or query media records (games, novels/books/texts, movies/TV/anime/videos)
-  in the user's macOS Shelf app (作品库). Use this skill whenever the user mentions Shelf,
+  in the user's Shelf app on macOS or Linux (作品库). Use this skill whenever the user mentions Shelf,
   作品库, or asks to record, log, mark as playing/reading/watching, completed, unfinished,
   or add to backlog any game (游戏), book/novel/manga/text (文字/小说), or anime/movie/series (影像/番剧/电影/电视剧).
 ---
 
 # Shelf（作品库）条目添加与维护指南
 
-本技能用于向 macOS 原生应用 **Shelf（作品库）** 安全地添加或更新作品记录，保证双语名称准确、竖版海报清晰匹配、且不与运行中的客户端发生数据覆盖冲突。
+本技能用于向 macOS 或 Linux 上的 **Shelf（作品库）** 安全地添加或更新作品记录，保证双语名称准确、竖版海报清晰匹配、且不与运行中的客户端发生数据覆盖冲突。
 
-- **数据文件**：`~/Library/Application Support/Shelf/library.json`
-- **封面目录**：`~/Library/Application Support/Shelf/Covers/`
+- **macOS 数据目录**：`~/Library/Application Support/Shelf/`
+- **Linux 数据目录**：`${XDG_DATA_HOME:-$HOME/.local/share}/Shelf/`。如果应用通过 `--data-dir` 打开，请把该目录传给 CLI 的 `SHELF_DATA_DIR` 环境变量（macOS 也支持通过 `SHELF_DATA_DIR` 指定独立测试/数据目录）。
+- 两个平台的数据目录都包含 `library.json`、`tags.json`（全局标签库）和 `Covers/`。Linux 安装后也可直接使用 `shelf-cli`。
 - **辅助脚本**：[shelf_cli.py](./scripts/shelf_cli.py)
 
 ---
@@ -21,12 +22,15 @@ description: >-
 
 每条记录对应一个 `MediaItem`，包含以下核心字段：
 
-### 1. 三大分类（`category`）与子标签（`subtag`）
-| `category` 值 | 界面名称（中 / 英） | 适用内容范围 | 常用 `subtag`（不确定则留空 `""`） |
+### 1. 三大分类（`category`）与统一标签（`tags`）
+| `category` 值 | 界面名称（中 / 英） | 适用内容范围 | 常用 `tags` 示例（支持多选与自定义，不确定可留空） |
 | :--- | :--- | :--- | :--- |
-| `game` | 游戏 / Games | PC、主机、掌机、移动端等各类电子游戏 | `Steam`、`Switch`、`PS5`、`PC`、`移动端`（**禁止填 `"游戏"`**，避免与大类重复） |
+| `game` | 游戏 / Games | PC、主机、掌机、移动端等各类电子游戏 | `Steam`、`Switch`、`PS5`、`PC`、`移动端` 及题材/特征标签（**禁止填 `"游戏"`**，避免与大类重复） |
 | `novel` | 文字 / Texts | 网文/小说、实体书、非虚构、社科、文学、漫画、轻小说等阅读作品 | `小说`、`非虚构`、`社科`、`文学`、`漫画`、`轻小说`、`科幻` |
 | `video` | 影像 / Videos | 电视剧、番剧/动画、电影、动画电影、纪录片等观看作品 | `番剧`、`电影`、`电视剧`、`纪录片`、`动画电影` |
+
+- **多标签与向后兼容**：作品支持同时拥有多个标签（存储在 `tags: [...]` 数组中）；CLI 与客户端会自动同步写入 `subtag`（取首个标签或空字符串），以兼容旧版客户端和备份格式。
+- **层级标签库管理（`tags.json` v2）**：`tags.json` 采用 `{"version": 2, "nodes": [{"name": ..., "parent": ...}]}` 层级结构（兼容读取旧版 v1 纯数组并自动迁移预设父分组：`平台` > 游戏平台、`体裁` > 文字体裁、`形式` > 影像形式）。支持通过 `shelf_cli.py tags list / add [--parent] / rename / delete` 管理层级标签：按父标签筛选（`list -t 平台`）会自动匹配其所有嵌套子标签，`list --untagged` 可筛选无标签作品，重命名父标签会同步更新子标签归属，删除父标签会级联删除其嵌套子标签并同步更新 `library.json` 中的相关作品。
 
 ### 2. 四种状态（`status`）映射规则
 根据用户的自然表达选择对应状态：
@@ -54,7 +58,7 @@ Shelf 支持一键切换 `中文 / English`，**严禁机翻或生造民间译�
 
 ## 二、标准操作流程（怎么添加 / 更新）
 
-> **关键安全约束**：`Shelf.app` 在退出（`applicationWillTerminate`）时会把内存数据写回 `library.json`。**切勿在 `Shelf.app` 运行时直接手改 `library.json`**——请始终使用下方的 [shelf_cli.py](./scripts/shelf_cli.py)，它会自动先安全退出客户端、原子写入数据并重新打开客户端。
+> **关键安全约束**：Shelf 在退出时会保存待写入的更改。**切勿在 Shelf 运行时直接手改 `library.json`**——请始终使用下方的 [shelf_cli.py](./scripts/shelf_cli.py)，它会自动先安全退出客户端、原子写入数据并重新打开客户端。
 
 ### 第 1 步：先查重（避免与待玩列表重复）
 很多用户刚打完或刚开始玩的作品原本就已经在 `backlog`（待开始）列表中。添加前先检索现有库：
@@ -90,12 +94,35 @@ python3 .agents/skills/shelf-library/scripts/shelf_cli.py upsert \
   --title-en "" \
   --category novel \
   --status active \
-  --subtag "小说" \
+  --tags "小说" \
   --notes "Andlao 著" \
   --cover-url "https://bookcover.yuewen.com/qdbimg/349573/1026938964/600.webp"
 ```
 
-如果是将库内已有的 `待玩` 作品更新为 `正在玩` 或 `已玩过`（保留原封面）：
+也可以一次传入多个标签（逗号分隔），或使用 `--add-tag` / `--remove-tag` 增量调整已有条目的标签：
+
+```bash
+python3 .agents/skills/shelf-library/scripts/shelf_cli.py upsert \
+  --title "蓝途王子" \
+  --title-en "Blue Prince" \
+  --category game \
+  --status active \
+  --tags "Steam,解谜"
+```
+
+如果只是管理全局标签库（查看层级树 / 新增或嵌套子标签 / 重命名 / 级联删除）或按标签 / 无标签检索：
+
+```bash
+python3 .agents/skills/shelf-library/scripts/shelf_cli.py tags list
+python3 .agents/skills/shelf-library/scripts/shelf_cli.py tags add "独立游戏"
+python3 .agents/skills/shelf-library/scripts/shelf_cli.py tags add "Roguelike" --parent "独立游戏"
+python3 .agents/skills/shelf-library/scripts/shelf_cli.py list -t "平台"
+python3 .agents/skills/shelf-library/scripts/shelf_cli.py list --untagged
+python3 .agents/skills/shelf-library/scripts/shelf_cli.py tags rename "解谜" "推理解谜"
+python3 .agents/skills/shelf-library/scripts/shelf_cli.py tags delete "PS5"
+```
+
+如果是将库内已有的 `待玩` 作品更新为 `正在玩` 或 `已玩过`（保留原封面与原有标签）：
 
 ```bash
 python3 .agents/skills/shelf-library/scripts/shelf_cli.py upsert \

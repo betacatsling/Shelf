@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct ShelfApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = LibraryStore()
+    @State private var updater = AppUpdater()
     @State private var showAddSheet = false
     @AppStorage("shelf.posterScale") private var posterScale: Double = 1.0
 
@@ -51,6 +52,7 @@ struct ShelfApp: App {
         WindowGroup(lang.tr("作品库", "Shelf")) {
             MainWindowView(showAddSheet: $showAddSheet)
                 .environment(store)
+                .environment(updater)
                 .frame(minWidth: 920, minHeight: 580)
                 .onAppear {
                     let currentStore = store
@@ -58,11 +60,36 @@ struct ShelfApp: App {
                         try currentStore?.flushPendingChanges()
                     }
                     appDelegate.language = { [weak currentStore] in currentStore?.language ?? .zh }
+                    updater.onToast = { [weak currentStore] message in
+                        currentStore?.showToast(message)
+                    }
+                    updater.languageProvider = { [weak currentStore] in
+                        currentStore?.language ?? .zh
+                    }
+                    updater.flushBeforeQuit = { [weak currentStore] in
+                        try currentStore?.flushPendingChanges()
+                    }
+                    updater.startAutomaticChecksIfNeeded()
                 }
         }
         .defaultSize(width: 1200, height: 780)
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button(
+                    updater.availableUpdate.map { update in
+                        lang.tr("更新至 \(update.displayTag)…", "Update to \(update.displayTag)…")
+                    } ?? lang.tr("检查更新…", "Check for Updates…")
+                ) {
+                    if updater.availableUpdate != nil {
+                        updater.performUpdate()
+                    } else {
+                        updater.checkForUpdates(userInitiated: true)
+                    }
+                }
+                .disabled(updater.isBusy)
+            }
+
             CommandGroup(replacing: .newItem) {
                 Button(lang.tr("添加作品…", "New Item…")) {
                     showAddSheet = true
@@ -98,6 +125,24 @@ struct ShelfApp: App {
             }
 
             CommandMenu(lang.tr("视图", "View")) {
+                Button(lang.tr("快速查找…", "Quick Find…")) {
+                    TagWindowController.shared.focusMainLibraryWindow()
+                    store.tagPickerItemID = nil
+                    store.isQuickFindPresented = true
+                }
+                .keyboardShortcut("f", modifiers: [.command])
+                .disabled(!store.isReady)
+
+                Button(lang.tr("设置作品标签…", "Tags…")) {
+                    TagWindowController.shared.focusMainLibraryWindow()
+                    store.isQuickFindPresented = false
+                    store.tagPickerItemID = store.selectedItemID
+                }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(!store.isReady || store.selectedItemID == nil)
+
+                Divider()
+
                 Button(SidebarDestination.all.title(in: lang)) {
                     store.selectDestination(.all)
                 }
@@ -136,7 +181,19 @@ struct ShelfApp: App {
                     store.selectedItemID = nil
                 }
                 .keyboardShortcut(.escape, modifiers: [])
-                .disabled(store.selectedItemID == nil)
+                .disabled(
+                    store.selectedItemID == nil
+                        || store.isQuickFindPresented
+                        || store.tagPickerItemID != nil
+                        || store.isDetailPopoverPresented
+                        || store.isTagWindowKey
+                )
+
+                Button(lang.tr("清除筛选", "Clear Filter")) {
+                    store.clearSearch()
+                }
+                .keyboardShortcut(.escape, modifiers: [.control])
+                .disabled(!store.hasActiveFilter)
 
                 Divider()
 
@@ -154,6 +211,14 @@ struct ShelfApp: App {
                     posterScale = 1.0
                 }
                 .keyboardShortcut("0", modifiers: [.command])
+            }
+
+            CommandGroup(after: .windowArrangement) {
+                Button(lang.tr("标签", "Tags")) {
+                    TagWindowController.shared.toggle(store: store)
+                }
+                .keyboardShortcut("t", modifiers: [.command, .control])
+                .disabled(!store.isReady)
             }
         }
     }

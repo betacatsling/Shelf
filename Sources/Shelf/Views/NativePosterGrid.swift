@@ -30,6 +30,7 @@ struct NativePosterGrid: NSViewRepresentable {
     let onEnsureSelectItem: (UUID) -> Void
     let onDeselectAll: () -> Void
     let onDoubleClickEdit: (UUID) -> Void
+    var onRequestEditTags: (UUID) -> Void = { _ in }
     let onRequestReplaceCover: (UUID) -> Void
     let onToggleSectionCollapse: (TrackingStatus) -> Void
     let onQuickAddInSection: (TrackingStatus) -> Void
@@ -1511,6 +1512,12 @@ final class PosterCardInteractiveView: NSView {
         }
 
         menu.addItem(.separator())
+
+        let tagsItem = ActionMenuItem(title: lang.tr("设置标签…", "Tags…")) { [weak coordinator] in
+            coordinator?.parent.onRequestEditTags(item.id)
+        }
+        tagsItem.image = NSImage(systemSymbolName: "tag", accessibilityDescription: nil)
+        menu.addItem(tagsItem)
 
         let editItem = ActionMenuItem(title: lang.tr("编辑作品信息…", "Edit Info…")) { [weak coordinator] in
             coordinator?.parent.onDoubleClickEdit(item.id)

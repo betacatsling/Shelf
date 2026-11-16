@@ -25,7 +25,6 @@ struct ItemDetailPanel: View {
 
     @State private var showCategoryPopover = false
     @State private var showSubtagPopover = false
-    @State private var draftSubtag: String = ""
 
     init(item: MediaItem, isShowing: Bool, onReplaceCover: @escaping () -> Void, onClose: @escaping () -> Void) {
         self.item = item
@@ -69,6 +68,12 @@ struct ItemDetailPanel: View {
             if draftNotes != newValue {
                 draftNotes = newValue
             }
+        }
+        .onChange(of: showTitlePopover || showCategoryPopover || showSubtagPopover) { _, presented in
+            store.isDetailPopoverPresented = presented
+        }
+        .onDisappear {
+            store.isDetailPopoverPresented = false
         }
         .confirmationDialog(
             lang.tr("确定要删除\(item.quotedTitle(in: lang))吗？", "Delete \(item.quotedTitle(in: lang))?"),
@@ -230,8 +235,8 @@ struct ItemDetailPanel: View {
                         titleEditorPopover
                     }
 
-                    // Clickable Category & Subtag Pills
-                    HStack(spacing: 6) {
+                    // Clickable Category & Tag Pills
+                    ShelfFlowLayout(alignment: .center, horizontalSpacing: 6, verticalSpacing: 6) {
                         Button {
                             showCategoryPopover = true
                         } label: {
@@ -253,38 +258,96 @@ struct ItemDetailPanel: View {
                             categoryPickerPopover
                         }
 
-                        Button {
-                            draftSubtag = item.subtag
-                            showSubtagPopover = true
-                        } label: {
-                            Group {
-                                if !item.subtag.isEmpty {
-                                    let shownTag = MediaCategory.localizedSubtag(item.subtag, in: lang)
-                                    let prefix = item.category.subtagShortLabel(in: lang)
-                                    Text(lang == .zh ? "\(prefix)：\(shownTag)" : "\(prefix): \(shownTag)")
+                        if item.tags.isEmpty {
+                            Button {
+                                showSubtagPopover = true
+                            } label: {
+                                Label(lang.tr("添加标签", "Add Tags"), systemImage: "tag")
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 3.5)
+                                    .background(
+                                        Color.primary.opacity(isSubtagHovered ? 0.12 : 0.045),
+                                        in: Capsule()
+                                    )
+                                    .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .onHover { isSubtagHovered = $0 }
+                            .help(lang.tr("设置标签 (⇧⌘T)", "Edit tags (⇧⌘T)"))
+                            .popover(isPresented: $showSubtagPopover, arrowEdge: .bottom) {
+                                subtagEditorPopover
+                            }
+                        } else {
+                            ForEach(item.tags, id: \.self) { tag in
+                                let localized = MediaCategory.localizedTag(tag, in: lang)
+                                Button {
+                                    showSubtagPopover = true
+                                } label: {
+                                    Text(localized)
                                         .font(.system(size: 11, weight: .medium))
                                         .foregroundStyle(.secondary)
-                                } else {
-                                    Label(lang.tr("标签", "Tag"), systemImage: "plus")
-                                        .font(.system(size: 10.5, weight: .medium))
-                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                        .padding(.horizontal, 9)
+                                        .padding(.vertical, 3.5)
+                                        .background(
+                                            Color.primary.opacity(0.08),
+                                            in: Capsule()
+                                        )
+                                        .contentShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .help(lang.tr("点击编辑标签 (⇧⌘T) · 右键更多操作", "Click to edit tags (⇧⌘T) · Right-click for more"))
+                                .contextMenu {
+                                    Button {
+                                        store.selectSingleTagFilter(tag, switchToAllIfEmptyInCurrentDestination: false)
+                                    } label: {
+                                        Label(
+                                            lang.tr("按「\(localized)」筛选", "Filter by “\(localized)”"),
+                                            systemImage: "line.3.horizontal.decrease.circle"
+                                        )
+                                    }
+
+                                    Button {
+                                        store.toggleItemTag(tag, for: item.id)
+                                    } label: {
+                                        Label(lang.tr("移除此标签", "Remove Tag"), systemImage: "xmark.circle")
+                                    }
+
+                                    Divider()
+
+                                    Button {
+                                        TagWindowController.shared.show(store: store)
+                                    } label: {
+                                        Label(lang.tr("管理标签…", "Manage Tags…"), systemImage: "slider.horizontal.3")
+                                    }
                                 }
                             }
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 3.5)
-                            .background(
-                                Color.primary.opacity(isSubtagHovered ? 0.12 : (item.subtag.isEmpty ? 0.045 : 0.08)),
-                                in: Capsule()
-                            )
-                            .contentShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .onHover { isSubtagHovered = $0 }
-                        .help(lang.tr("点击设置标签", "Click to edit tag"))
-                        .popover(isPresented: $showSubtagPopover, arrowEdge: .bottom) {
-                            subtagEditorPopover
+
+                            Button {
+                                showSubtagPopover = true
+                            } label: {
+                                Image(systemName: "tag")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 7.5)
+                                    .padding(.vertical, 4)
+                                    .background(
+                                        Color.primary.opacity(isSubtagHovered ? 0.12 : 0.05),
+                                        in: Capsule()
+                                    )
+                                    .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .onHover { isSubtagHovered = $0 }
+                            .help(lang.tr("设置标签 (⇧⌘T)", "Edit tags (⇧⌘T)"))
+                            .popover(isPresented: $showSubtagPopover, arrowEdge: .bottom) {
+                                subtagEditorPopover
+                            }
                         }
                     }
+                    .padding(.horizontal, 16)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -393,61 +456,14 @@ struct ItemDetailPanel: View {
     }
 
     private var subtagEditorPopover: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(item.category.subtagFieldTitle(in: lang))
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 62), spacing: 6)],
-                alignment: .leading,
-                spacing: 6
-            ) {
-                ForEach(item.category.presetTags, id: \.self) { tag in
-                    ShelfChipButton(
-                        title: MediaCategory.localizedSubtag(tag, in: lang),
-                        isSelected: draftSubtag == tag
-                    ) {
-                        draftSubtag = (draftSubtag == tag) ? "" : tag
-                        commitSubtagEdit()
-                        showSubtagPopover = false
-                    }
-                }
-            }
-
-            HStack(spacing: 6) {
-                TextField(lang.tr("自定义标签…", "Custom tag…"), text: $draftSubtag)
-                    .textFieldStyle(.roundedBorder)
-                    .controlSize(.small)
-                    .font(.system(size: 12))
-                    .onSubmit {
-                        commitSubtagEdit()
-                        showSubtagPopover = false
-                    }
-
-                if !draftSubtag.isEmpty {
-                    Button(lang.tr("清除", "Clear")) {
-                        draftSubtag = ""
-                        commitSubtagEdit()
-                        showSubtagPopover = false
-                    }
-                    .buttonStyle(
-                        ShelfButtonStyle(
-                            variant: .subtle,
-                            horizontalPadding: 7,
-                            verticalPadding: 4,
-                            cornerRadius: 5
-                        )
-                    )
-                    .font(.system(size: 11))
-                }
-            }
+        TagPickerContentView(
+            store: store,
+            itemID: item.id,
+            language: lang
+        ) {
+            showSubtagPopover = false
         }
-        .padding(12)
-        .frame(width: 244)
-        .onDisappear {
-            commitSubtagEdit()
-        }
+        .frame(width: 265)
     }
 
     private func commitTitleEdit() {
@@ -468,21 +484,6 @@ struct ItemDetailPanel: View {
         guard newCategory != item.category else { return }
         var updated = item
         updated.category = newCategory
-        let otherPresets = MediaCategory.allCases
-            .filter { $0 != newCategory }
-            .flatMap(\.presetTags)
-        if otherPresets.contains(updated.subtag) && !newCategory.presetTags.contains(updated.subtag) {
-            updated.subtag = ""
-        }
-        updated.isSample = false
-        store.updateItem(updated, originalCoverFileName: item.coverFileName)
-    }
-
-    private func commitSubtagEdit() {
-        let trimmed = draftSubtag.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed != item.subtag else { return }
-        var updated = item
-        updated.subtag = trimmed
         updated.isSample = false
         store.updateItem(updated, originalCoverFileName: item.coverFileName)
     }

@@ -33,23 +33,99 @@ struct ShelfSectionModel: Equatable, Sendable {
     var visibleCount: Int { isCollapsed ? 0 : items.count }
 }
 
+struct TagGroupFilter: Equatable, Hashable, Sendable {
+    let rootTag: String
+    let matchingTags: [String]
+}
+
 struct LibraryProjection: Sendable {
-    static let empty = LibraryProjection(sections: [], count: 0, statusCounts: [:], subtags: [], showStatusBadges: false)
+    static let empty = LibraryProjection(
+        sections: [],
+        count: 0,
+        statusCounts: [:],
+        subtags: [],
+        tagCounts: [:],
+        narrowedTagCounts: [:],
+        untaggedCount: 0,
+        showStatusBadges: false
+    )
 
     let sections: [ShelfSectionModel]
     let count: Int
     let statusCounts: [TrackingStatus: Int]
     let subtags: [String]
+    let tagCounts: [String: Int]
+    let narrowedTagCounts: [String: Int]
+    let untaggedCount: Int
     let showStatusBadges: Bool
 }
 
 /// Keeps collation and search independent of tab/tag changes. All indices refer to the
 /// same catalog revision, so display order and the counts always use the same records.
 struct LibraryQuery {
+    struct ParsedSearch: Equatable {
+        let tagTerms: [String]
+        let freeText: String
+        let nonTagText: String
+
+        var isEmpty: Bool {
+            tagTerms.isEmpty && freeText.isEmpty
+        }
+
+        init(text: String) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                self.tagTerms = []
+                self.freeText = ""
+                self.nonTagText = ""
+                return
+            }
+
+            let parts = trimmed.split(whereSeparator: \.isWhitespace)
+            var parsedTags: [String] = []
+            var nonTagParts: [Substring] = []
+            var sawTagPrefix = false
+
+            for part in parts {
+                if let body = Self.extractPrefixedTag(from: part) {
+                    sawTagPrefix = true
+                    if !body.isEmpty {
+                        parsedTags.append(body)
+                    }
+                } else {
+                    nonTagParts.append(part)
+                }
+            }
+
+            self.tagTerms = parsedTags
+            let remaining = nonTagParts.joined(separator: " ")
+            self.nonTagText = remaining
+            self.freeText = sawTagPrefix ? remaining : trimmed
+        }
+
+        static func extractPrefixedTag(from token: Substring) -> String? {
+            for prefix in ["#", "＃", "标签:", "标签："] {
+                if token.hasPrefix(prefix) {
+                    return String(token.dropFirst(prefix.count))
+                }
+            }
+            if token.count >= 4 {
+                let prefixEnd = token.index(token.startIndex, offsetBy: 4)
+                let head = token[..<prefixEnd]
+                if head.caseInsensitiveCompare("tag:") == .orderedSame
+                    || head.caseInsensitiveCompare("tag：") == .orderedSame {
+                    return String(token[prefixEnd...])
+                }
+            }
+            return nil
+        }
+    }
+
     struct Options: Equatable, Sendable {
         let destination: SidebarDestination
         let status: StatusFilterOption
-        let subtag: String?
+        let tagGroups: [TagGroupFilter]
+        let untaggedOnly: Bool
         let text: String
         let sortField: LibrarySortField
         let ascending: Bool
@@ -96,7 +172,12 @@ struct LibraryQuery {
 
     mutating func project(_ records: [MediaItem], request: Request) -> LibraryProjection {
         let options = request.options
-        let searchKey = SearchKey(revision: request.revision, notesRevision: request.notesRevision, text: options.text)
+        let parsed = ParsedSearch(text: options.text)
+        let searchKey = SearchKey(
+            revision: request.revision,
+            notesRevision: parsed.freeText.isEmpty ? 0 : request.notesRevision,
+            text: options.text
+        )
         let projectionKey = ProjectionKey(search: searchKey, options: options)
         if let (key, result) = projected, key == projectionKey {
             return result
@@ -107,10 +188,10 @@ struct LibraryQuery {
         if sorted?.0 != sortKey {
             sorted = (sortKey, Self.sortedIndices(records, key: sortKey))
         }
-        let isSearching = !options.text.isEmpty
+        let isSearching = !parsed.isEmpty
         if isSearching {
             if matches?.0 != searchKey {
-                matches = (searchKey, Self.search(records, for: options.text))
+                matches = (searchKey, Self.search(records, parsed: parsed))
             }
         } else {
             matches = nil
@@ -119,6 +200,8 @@ struct LibraryQuery {
         let usesShelves = options.status == .allShelves && !isSearching
         var statusCounts: [TrackingStatus: Int] = [:]
         var tagCounts: [String: Int] = [:]
+        var narrowedTagCounts: [String: Int] = [:]
+        var untaggedCount = 0
         var shelves: [TrackingStatus: [LibraryPoster]] = [:]
         var flat: [LibraryPoster] = []
         var count = 0
@@ -131,18 +214,32 @@ struct LibraryQuery {
             let item = records[index]
             guard options.destination.includes(item) else { continue }
             let statusMatches = options.status == .allShelves || options.status == .single(item.status)
-            let tag: String
-            if category != nil || options.subtag != nil {
-                tag = item.subtag.trimmingCharacters(in: .whitespacesAndNewlines)
-            } else {
-                tag = ""
+            if statusMatches {
+                if item.tags.isEmpty {
+                    untaggedCount += 1
+                } else {
+                    for rawTag in item.tags {
+                        let tag = MediaCategory.canonicalTag(rawTag)
+                        if !tag.isEmpty {
+                            tagCounts[tag, default: 0] += 1
+                        }
+                    }
+                }
             }
-            if category != nil, statusMatches, !tag.isEmpty {
-                tagCounts[tag, default: 0] += 1
+            if options.untaggedOnly {
+                if !item.tags.isEmpty { continue }
+            } else if !options.tagGroups.isEmpty {
+                if !options.tagGroups.allSatisfy({ item.hasAnyTag(in: $0.matchingTags) }) { continue }
             }
-            if let selectedTag = options.subtag, !selectedTag.isEmpty, tag != selectedTag { continue }
             statusCounts[item.status, default: 0] += 1
             guard statusMatches else { continue }
+
+            for rawTag in item.tags {
+                let tag = MediaCategory.canonicalTag(rawTag)
+                if !tag.isEmpty {
+                    narrowedTagCounts[tag, default: 0] += 1
+                }
+            }
 
             let poster = LibraryPoster(item, language: options.language)
             count += 1
@@ -170,49 +267,90 @@ struct LibraryQuery {
             return lhs.key.localizedStandardCompare(rhs.key) == .orderedAscending
         }.map(\.key)
         let result = LibraryProjection(sections: sections, count: count, statusCounts: statusCounts,
-                                       subtags: tags, showStatusBadges: options.status == .allShelves && isSearching)
+                                       subtags: tags, tagCounts: tagCounts,
+                                       narrowedTagCounts: narrowedTagCounts,
+                                       untaggedCount: untaggedCount,
+                                       showStatusBadges: options.status == .allShelves && isSearching)
         projected = (projectionKey, result)
         return result
     }
 
-    static func matches(_ item: MediaItem, text: String) -> Bool {
-        guard !text.isEmpty else { return true }
-        var matcher = SearchMatcher(text: text)
+    static func matches(
+        _ item: MediaItem,
+        text: String,
+        tagGroups: [TagGroupFilter] = [],
+        untaggedOnly: Bool = false
+    ) -> Bool {
+        if untaggedOnly {
+            if !item.tags.isEmpty { return false }
+        } else if !tagGroups.isEmpty {
+            if !tagGroups.allSatisfy({ item.hasAnyTag(in: $0.matchingTags) }) {
+                return false
+            }
+        }
+        let parsed = ParsedSearch(text: text)
+        guard !parsed.isEmpty else { return true }
+        var matcher = SearchMatcher(parsed: parsed)
         return matcher.matches(item)
     }
 
-    private static func search(_ records: [MediaItem], for text: String) -> [Bool] {
-        var matcher = SearchMatcher(text: text)
+    private static func search(_ records: [MediaItem], parsed: ParsedSearch) -> [Bool] {
+        var matcher = SearchMatcher(parsed: parsed)
         return records.map { matcher.matches($0) }
     }
 
     private struct SearchMatcher {
-        let text: String
+        let parsed: ParsedSearch
         let matchingCategories: Set<MediaCategory>
-        var tagMatches: [String: Bool] = [:]
+        var freeTextTagMatches: [String: Bool] = [:]
 
-        init(text: String) {
-            self.text = text
-            matchingCategories = Set(MediaCategory.allCases.filter {
-                $0.title(in: .zh).localizedCaseInsensitiveContains(text)
-                    || $0.title(in: .en).localizedCaseInsensitiveContains(text)
-            })
+        init(parsed: ParsedSearch) {
+            self.parsed = parsed
+            if parsed.freeText.isEmpty {
+                matchingCategories = []
+            } else {
+                let text = parsed.freeText
+                matchingCategories = Set(MediaCategory.allCases.filter {
+                    $0.title(in: .zh).localizedCaseInsensitiveContains(text)
+                        || $0.title(in: .en).localizedCaseInsensitiveContains(text)
+                })
+            }
         }
 
         mutating func matches(_ item: MediaItem) -> Bool {
+            for term in parsed.tagTerms {
+                let hasMatchingTag = item.tags.contains { tag in
+                    !tag.isEmpty && Self.tag(tag, matchesTerm: term)
+                }
+                if !hasMatchingTag {
+                    return false
+                }
+            }
+
+            let text = parsed.freeText
+            guard !text.isEmpty else { return true }
+
             if matchingCategories.contains(item.category)
                 || item.title.localizedCaseInsensitiveContains(text)
                 || item.titleEN.localizedCaseInsensitiveContains(text) {
                 return true
             }
-            if let cached = tagMatches[item.subtag] {
-                return cached || item.notes.localizedCaseInsensitiveContains(text)
+            for tag in item.tags where !tag.isEmpty {
+                if let cached = freeTextTagMatches[tag] {
+                    if cached { return true }
+                    continue
+                }
+                let match = Self.tag(tag, matchesTerm: text)
+                freeTextTagMatches[tag] = match
+                if match { return true }
             }
-            let match = item.subtag.localizedCaseInsensitiveContains(text)
-                || MediaCategory.localizedSubtag(item.subtag, in: .en).localizedCaseInsensitiveContains(text)
-                || MediaCategory.localizedSubtag(item.subtag, in: .zh).localizedCaseInsensitiveContains(text)
-            tagMatches[item.subtag] = match
-            return match || item.notes.localizedCaseInsensitiveContains(text)
+            return item.notes.localizedCaseInsensitiveContains(text)
+        }
+
+        private static func tag(_ tag: String, matchesTerm term: String) -> Bool {
+            tag.localizedCaseInsensitiveContains(term)
+                || MediaCategory.localizedSubtag(tag, in: .en).localizedCaseInsensitiveContains(term)
+                || MediaCategory.localizedSubtag(tag, in: .zh).localizedCaseInsensitiveContains(term)
         }
     }
 

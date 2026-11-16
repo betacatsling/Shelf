@@ -11,14 +11,51 @@ final class LibraryStore {
     }
     var selectedDestination: SidebarDestination = .all
     var statusFilter: StatusFilterOption = .allShelves
-    var subtagFilter: String?
+    var searchTokens: [SearchTagToken] = [] {
+        didSet {
+            let deduplicated = Self.deduplicateTokens(searchTokens)
+            if deduplicated != searchTokens {
+                searchTokens = deduplicated
+            }
+            if !searchTokens.isEmpty && filterUntaggedOnly {
+                filterUntaggedOnly = false
+            }
+        }
+    }
+    var filterUntaggedOnly: Bool = false {
+        didSet {
+            if filterUntaggedOnly && !searchTokens.isEmpty {
+                searchTokens = []
+            }
+        }
+    }
+    var subtagFilter: String? {
+        get { searchTokens.first?.tag }
+        set {
+            let canonical = newValue.map(MediaCategory.canonicalTag) ?? ""
+            let next = canonical.isEmpty ? [] : [SearchTagToken(tag: canonical)]
+            if searchTokens != next {
+                searchTokens = next
+            }
+        }
+    }
+    var activeFilterTags: [String] { searchTokens.map(\.tag) }
+    var hasActiveTagFilter: Bool { filterUntaggedOnly || !searchTokens.isEmpty }
+    var hasActiveFilter: Bool { hasActiveTagFilter || !trimmedSearchText.isEmpty }
     var sortField: LibrarySortField = .updatedAt
     var sortAscending = false
     var searchText = ""
+    var isQuickFindPresented = false
+    var tagPickerItemID: UUID? = nil
+    var isTagWindowKey = false
+    var isDetailPopoverPresented = false
     var selectedItemID: UUID? {
         didSet { refreshSelectedItem() }
     }
     private(set) var selectedItem: MediaItem?
+    private(set) var tagCategories: [String] = []
+    private(set) var tagNodes: [TagNode] = []
+    var managedTags: [String] { tagNodes.map(\.name) }
     private(set) var toastMessage: String?
     private(set) var isLoading = false
     private(set) var loadFailed = false
@@ -71,11 +108,21 @@ final class LibraryStore {
         isLoading = true
         Task { [weak self] in
             do {
-                let items = try await file.load()
+                let snapshot = try await file.loadSnapshot()
                 guard let self else { return }
-                replaceRecords(with: items ?? Self.makeStarterSamples())
+                let initialItems = snapshot.items ?? Self.makeStarterSamples()
+                let baseCategories = snapshot.tagCategories ?? TagCatalog.defaultStarterCategories
+                let baseNodes = snapshot.tagNodes ?? TagCatalog.defaultStarterNodes
+                let normalized = TagCatalog.normalize(
+                    categories: baseCategories,
+                    nodes: baseNodes,
+                    mergingItemTags: initialItems.flatMap(\.tags)
+                )
+                tagCategories = normalized.categories
+                tagNodes = normalized.nodes
+                replaceRecords(with: initialItems)
                 isLoading = false
-                if items == nil { scheduleSave() }
+                if snapshot.items == nil || snapshot.tagNodes == nil { scheduleSave() }
             } catch {
                 guard let self else { return }
                 print("Failed to read library.json: \(error)")
@@ -89,12 +136,20 @@ final class LibraryStore {
     init(previewItems: [MediaItem], language: AppLanguage = .zh) {
         self.language = language
         libraryFile = nil
+        let normalized = TagCatalog.normalize(
+            categories: TagCatalog.defaultStarterCategories,
+            nodes: TagCatalog.defaultStarterNodes,
+            mergingItemTags: previewItems.flatMap(\.tags)
+        )
+        tagCategories = normalized.categories
+        tagNodes = normalized.nodes
         replaceRecords(with: previewItems)
     }
 
     var isReady: Bool { !isLoading && !loadFailed }
     var isEmpty: Bool { counts.total == 0 }
     var hasSampleItems: Bool { counts.samples > 0 }
+    var totalUntaggedCount: Int { records.reduce(0) { $0 + ($1.tags.isEmpty ? 1 : 0) } }
 
     func item(withID id: UUID) -> MediaItem? {
         indices[id].map { records[$0] }
@@ -109,12 +164,23 @@ final class LibraryStore {
         language = (language == .zh) ? .en : .zh
     }
 
+    private var activeTagGroupFilters: [TagGroupFilter] {
+        activeFilterTags.map { TagGroupFilter(rootTag: $0, matchingTags: expandedTagFamily(for: $0)) }
+    }
+
     func selectDestination(_ destination: SidebarDestination) {
         selectedDestination = destination
         statusFilter = .allShelves
-        subtagFilter = nil
+        searchTokens = []
+        filterUntaggedOnly = false
         if let item = selectedItem,
-           !destination.includes(item) || !LibraryQuery.matches(item, text: trimmedSearchText) {
+           !destination.includes(item)
+            || !LibraryQuery.matches(
+                item,
+                text: trimmedSearchText,
+                tagGroups: activeTagGroupFilters,
+                untaggedOnly: filterUntaggedOnly
+            ) {
             selectedItemID = nil
         }
     }
@@ -136,7 +202,8 @@ final class LibraryStore {
         return .init(revision: catalogRevision, sortRevision: sortRevision,
                      notesRevision: text.isEmpty ? 0 : notesRevision,
                      options: .init(destination: selectedDestination, status: statusFilter,
-                                    subtag: subtagFilter, text: text, sortField: sortField,
+                                    tagGroups: activeTagGroupFilters, untaggedOnly: filterUntaggedOnly,
+                                    text: text, sortField: sortField,
                                     ascending: sortAscending, language: language))
     }
 
@@ -159,6 +226,564 @@ final class LibraryStore {
             sortField = field
             sortAscending = field.defaultAscending
         }
+    }
+
+    // MARK: - Tag Search
+
+    func hasSearchTag(_ rawTag: String) -> Bool {
+        searchTokens.contains { MediaCategory.tagsMatch($0.tag, rawTag) }
+    }
+
+    func addSearchTag(_ rawTag: String) {
+        let resolved = resolveTagName(rawTag)
+        guard !resolved.isEmpty, !hasSearchTag(resolved) else { return }
+        filterUntaggedOnly = false
+        searchTokens.append(SearchTagToken(tag: resolved))
+    }
+
+    func toggleSearchTag(_ rawTag: String) {
+        if hasSearchTag(rawTag) {
+            searchTokens.removeAll { MediaCategory.tagsMatch($0.tag, rawTag) }
+        } else {
+            addSearchTag(rawTag)
+        }
+    }
+
+    /// Narrows an active ancestor filter when selecting one of its descendants, or intersects unrelated tags.
+    func refineTagFilter(with rawTag: String) {
+        let resolved = resolveTagName(rawTag)
+        guard !resolved.isEmpty else { return }
+        if hasSearchTag(resolved) {
+            toggleSearchTag(resolved)
+            return
+        }
+        filterUntaggedOnly = false
+        if let ancestorIdx = searchTokens.firstIndex(where: {
+            TagCatalog.isDescendant(resolved, of: $0.tag, in: tagNodes)
+        }) {
+            var next = searchTokens
+            next[ancestorIdx] = SearchTagToken(tag: resolved)
+            searchTokens = next
+        } else {
+            searchTokens.append(SearchTagToken(tag: resolved))
+        }
+    }
+
+    func selectSingleTagFilter(_ rawTag: String, switchToAllIfEmptyInCurrentDestination: Bool = false) {
+        let resolved = resolveTagName(rawTag)
+        guard !resolved.isEmpty else { return }
+        let family = expandedTagFamily(for: resolved)
+        if switchToAllIfEmptyInCurrentDestination {
+            let hasMatchInDestination = records.contains {
+                selectedDestination.includes($0) && $0.hasAnyTag(in: family)
+            }
+            if !hasMatchInDestination && records.contains(where: { $0.hasAnyTag(in: family) }) {
+                selectedDestination = .all
+                statusFilter = .allShelves
+                searchText = ""
+            }
+        }
+        filterUntaggedOnly = false
+        searchTokens = [SearchTagToken(tag: resolved)]
+    }
+
+    func selectUntaggedFilter(switchToAllIfEmptyInCurrentDestination: Bool = false) {
+        if switchToAllIfEmptyInCurrentDestination {
+            let hasUntaggedInDestination = records.contains {
+                selectedDestination.includes($0) && $0.tags.isEmpty
+            }
+            if !hasUntaggedInDestination && records.contains(where: { $0.tags.isEmpty }) {
+                selectedDestination = .all
+                statusFilter = .allShelves
+                searchText = ""
+            }
+        }
+        searchTokens = []
+        filterUntaggedOnly = true
+    }
+
+    func toggleUntaggedFilter() {
+        filterUntaggedOnly.toggle()
+    }
+
+    func clearSearch() {
+        searchText = ""
+        searchTokens = []
+        filterUntaggedOnly = false
+    }
+
+    func commitTypedHashTags() {
+        let parsed = LibraryQuery.ParsedSearch(text: searchText)
+        guard !parsed.tagTerms.isEmpty else { return }
+        for term in parsed.tagTerms {
+            addSearchTag(term)
+        }
+        searchText = parsed.nonTagText
+    }
+
+    func topQuickFindItems(matching rawQuery: String, limit: Int = 6) -> [MediaItem] {
+        let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, limit > 0 else { return [] }
+
+        func rank(_ item: MediaItem) -> Int {
+            let display = item.displayTitle(in: language)
+            if display.hasCaseInsensitivePrefix(trimmed)
+                || item.title.hasCaseInsensitivePrefix(trimmed)
+                || item.titleEN.hasCaseInsensitivePrefix(trimmed) {
+                return 0
+            }
+            if display.localizedCaseInsensitiveContains(trimmed)
+                || item.title.localizedCaseInsensitiveContains(trimmed)
+                || item.titleEN.localizedCaseInsensitiveContains(trimmed) {
+                return 1
+            }
+            return 2
+        }
+
+        let matched = records.filter { LibraryQuery.matches($0, text: trimmed) }
+        return Array(
+            matched.sorted { lhs, rhs in
+                let rl = rank(lhs), rr = rank(rhs)
+                if rl != rr { return rl < rr }
+                return lhs.updatedAt > rhs.updatedAt
+            }
+            .prefix(limit)
+        )
+    }
+
+    private func resolveTagName(_ rawTag: String) -> String {
+        let canonical = MediaCategory.canonicalTag(rawTag)
+        guard !canonical.isEmpty else { return "" }
+        if let existing = tagNodes.first(where: { MediaCategory.tagsMatch($0.name, canonical) }) {
+            return existing.name
+        }
+        if let existing = records.lazy.flatMap(\.tags).first(where: { MediaCategory.tagsMatch($0, canonical) }) {
+            return existing
+        }
+        return canonical
+    }
+
+    private static func deduplicateTokens(_ tokens: [SearchTagToken]) -> [SearchTagToken] {
+        var seen: Set<String> = []
+        var result: [SearchTagToken] = []
+        for token in tokens where !token.tag.isEmpty {
+            if seen.insert(token.id).inserted {
+                result.append(token)
+            }
+        }
+        return result
+    }
+
+    // MARK: - Tag Catalog
+
+    func tagExists(_ rawTag: String) -> Bool {
+        let canonical = MediaCategory.canonicalTag(rawTag)
+        guard !canonical.isEmpty else { return false }
+        return tagNodes.contains { MediaCategory.tagsMatch($0.name, canonical) }
+    }
+
+    func expandedTagFamily(for rawTag: String) -> [String] {
+        TagCatalog.expandedFamily(for: rawTag, in: tagNodes)
+    }
+
+    func tagAncestors(of rawTag: String) -> [String] {
+        TagCatalog.ancestors(of: rawTag, in: tagNodes)
+    }
+
+    func nestedChildCount(for rawTag: String) -> Int {
+        TagCatalog.descendants(of: rawTag, in: tagNodes).count
+    }
+
+    private func ensureManagedTagsInclude(_ newTags: [String]) {
+        guard !newTags.isEmpty else { return }
+        let normalized = TagCatalog.normalize(
+            categories: tagCategories,
+            nodes: tagNodes,
+            mergingItemTags: newTags
+        )
+        if normalized.nodes != tagNodes {
+            tagNodes = normalized.nodes
+        }
+    }
+
+    func availableTags(prioritizing category: MediaCategory? = nil, including extra: [String] = []) -> [String] {
+        var all = tagNodes.map(\.name)
+        for raw in extra {
+            let canonical = MediaCategory.canonicalTag(raw)
+            guard !canonical.isEmpty else { continue }
+            if !all.contains(where: { MediaCategory.tagsMatch($0, canonical) }) {
+                all.append(canonical)
+            }
+        }
+        guard let category else { return all }
+
+        var relevant: [String] = []
+        var otherStarter: [String] = []
+        for tag in all {
+            let isPresetForCategory = category.presetTags.contains { MediaCategory.tagsMatch($0, tag) }
+            let isDefaultStarter = MediaCategory.defaultStarterTags.contains { MediaCategory.tagsMatch($0, tag) }
+            let usedInCategory = records.contains { $0.category == category && $0.hasTag(tag) }
+            if isPresetForCategory || !isDefaultStarter || usedInCategory {
+                relevant.append(tag)
+            } else {
+                otherStarter.append(tag)
+            }
+        }
+        return relevant + otherStarter
+    }
+
+    func usageCount(
+        forTag rawTag: String,
+        in destination: SidebarDestination = .all,
+        includeDescendants: Bool = false
+    ) -> Int {
+        if includeDescendants {
+            let family = expandedTagFamily(for: rawTag)
+            guard !family.isEmpty else { return 0 }
+            return records.reduce(0) { count, item in
+                guard destination.includes(item) else { return count }
+                return count + (item.hasAnyTag(in: family) ? 1 : 0)
+            }
+        }
+        return records.reduce(0) { count, item in
+            guard destination.includes(item) else { return count }
+            return count + (item.hasTag(rawTag) ? 1 : 0)
+        }
+    }
+
+    func resolveCategoryName(_ rawCategory: String) -> String? {
+        let canonical = MediaCategory.canonicalTag(rawCategory)
+        guard !canonical.isEmpty else { return nil }
+        return tagCategories.first { MediaCategory.tagsMatch($0, canonical) }
+    }
+
+    func tagCount(inCategory rawCategory: String?) -> Int {
+        guard let rawCategory else {
+            let validIDs = Set(tagCategories.map { $0.lowercased() })
+            return tagNodes.filter { node in
+                guard let cat = node.category else { return true }
+                return !validIDs.contains(cat.lowercased())
+            }.count
+        }
+        let targetID = MediaCategory.canonicalTag(rawCategory).lowercased()
+        return tagNodes.filter { $0.category?.lowercased() == targetID }.count
+    }
+
+    @discardableResult
+    func addTagCategory(_ rawName: String) -> String? {
+        let canonical = MediaCategory.canonicalTag(rawName)
+        guard !canonical.isEmpty else { return nil }
+        if let existing = resolveCategoryName(canonical) {
+            return existing
+        }
+        guard isReady else { return canonical }
+        let normalized = TagCatalog.normalize(
+            categories: tagCategories + [canonical],
+            nodes: tagNodes
+        )
+        tagCategories = normalized.categories
+        tagNodes = normalized.nodes
+        catalogRevision &+= 1
+        scheduleSave()
+        let shown = MediaCategory.localizedTag(canonical, in: language)
+        showToast(language.tr("已添加分类「\(shown)」", "Added category “\(shown)”"))
+        return canonical
+    }
+
+    @discardableResult
+    func renameTagCategory(from oldRaw: String, to newRaw: String) -> String? {
+        guard isReady, let oldCategory = resolveCategoryName(oldRaw) else { return nil }
+        let trimmedNew = MediaCategory.canonicalTag(newRaw)
+        guard !trimmedNew.isEmpty else { return nil }
+
+        let existingTarget = tagCategories.first {
+            !MediaCategory.tagsMatch($0, oldCategory) && MediaCategory.tagsMatch($0, trimmedNew)
+        }
+        let target = existingTarget ?? trimmedNew
+        let merging = existingTarget != nil
+
+        var updatedCategories: [String] = []
+        for cat in tagCategories {
+            if MediaCategory.tagsMatch(cat, oldCategory) {
+                if !merging {
+                    updatedCategories.append(target)
+                }
+            } else {
+                updatedCategories.append(cat)
+            }
+        }
+
+        let updatedNodes = tagNodes.map { node in
+            var copy = node
+            if let cat = copy.category, MediaCategory.tagsMatch(cat, oldCategory) {
+                copy.category = target
+            }
+            return copy
+        }
+
+        let normalized = TagCatalog.normalize(categories: updatedCategories, nodes: updatedNodes)
+        guard normalized.categories != tagCategories || normalized.nodes != tagNodes else { return target }
+        tagCategories = normalized.categories
+        tagNodes = normalized.nodes
+        catalogRevision &+= 1
+        scheduleSave()
+        let oldShown = MediaCategory.localizedTag(oldCategory, in: language)
+        let newShown = MediaCategory.localizedTag(target, in: language)
+        showToast(language.tr("已将分类「\(oldShown)」重命名为「\(newShown)」", "Renamed category “\(oldShown)” to “\(newShown)”"))
+        return target
+    }
+
+    func deleteTagCategory(_ rawName: String) {
+        guard isReady, let target = resolveCategoryName(rawName) else { return }
+        let updatedCategories = tagCategories.filter { !MediaCategory.tagsMatch($0, target) }
+        let updatedNodes = tagNodes.map { node in
+            var copy = node
+            if let cat = copy.category, MediaCategory.tagsMatch(cat, target) {
+                copy.category = nil
+            }
+            return copy
+        }
+        let normalized = TagCatalog.normalize(categories: updatedCategories, nodes: updatedNodes)
+        tagCategories = normalized.categories
+        tagNodes = normalized.nodes
+        catalogRevision &+= 1
+        scheduleSave()
+        let shown = MediaCategory.localizedTag(target, in: language)
+        showToast(language.tr("已删除分类「\(shown)」", "Deleted category “\(shown)”"))
+    }
+
+    func setTagCategory(_ rawTag: String, category rawCategory: String?) {
+        guard isReady else { return }
+        guard let idx = tagNodes.firstIndex(where: { MediaCategory.tagsMatch($0.name, rawTag) }) else { return }
+        let resolvedCat = rawCategory.flatMap { resolveCategoryName($0) }
+        if rawCategory != nil && resolvedCat == nil { return }
+        var updated = tagNodes
+        updated[idx].category = resolvedCat
+        if updated[idx].parent != nil {
+            updated[idx].parent = nil
+        }
+        let normalized = TagCatalog.normalize(categories: tagCategories, nodes: updated)
+        guard normalized.nodes != tagNodes else { return }
+        tagNodes = normalized.nodes
+        catalogRevision &+= 1
+        scheduleSave()
+    }
+
+    @discardableResult
+    func addTag(_ rawTag: String, category rawCategory: String? = nil, parent: String? = nil) -> String? {
+        let canonical = MediaCategory.canonicalTag(rawTag)
+        guard !canonical.isEmpty else { return nil }
+        if let existing = tagNodes.first(where: { MediaCategory.tagsMatch($0.name, canonical) }) {
+            return existing.name
+        }
+        guard isReady else { return canonical }
+        let validParent: String?
+        let resolvedCategory: String?
+        if let parent {
+            let resolvedParent = resolveTagName(parent)
+            let parentNode = tagNodes.first(where: { MediaCategory.tagsMatch($0.name, resolvedParent) })
+            validParent = parentNode?.name
+            resolvedCategory = parentNode?.category
+        } else {
+            validParent = nil
+            resolvedCategory = rawCategory.flatMap { resolveCategoryName($0) }
+        }
+        let normalized = TagCatalog.normalize(
+            categories: tagCategories,
+            nodes: tagNodes + [TagNode(name: canonical, category: resolvedCategory, parent: validParent)]
+        )
+        tagCategories = normalized.categories
+        tagNodes = normalized.nodes
+        catalogRevision &+= 1
+        scheduleSave()
+        let shown = MediaCategory.localizedTag(canonical, in: language)
+        showToast(language.tr("已添加标签「\(shown)」", "Added tag “\(shown)”"))
+        return canonical
+    }
+
+    @discardableResult
+    func renameTag(from oldRaw: String, to newRaw: String) -> String? {
+        guard isReady else { return nil }
+        let trimmedNew = newRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedNew.isEmpty else { return nil }
+        let oldCanonical = MediaCategory.canonicalTag(oldRaw)
+        guard !oldCanonical.isEmpty else { return nil }
+
+        let existingTarget = tagNodes.first {
+            !MediaCategory.tagsMatch($0.name, oldRaw) && MediaCategory.tagsMatch($0.name, trimmedNew)
+        }
+        let target = existingTarget?.name ?? trimmedNew
+        let mergingIntoExisting = existingTarget != nil
+
+        var newNodes: [TagNode] = []
+        var changed = false
+        for var node in tagNodes {
+            if MediaCategory.tagsMatch(node.name, oldRaw) {
+                changed = true
+                if mergingIntoExisting {
+                    continue
+                }
+                node.name = target
+                if let p = node.parent, MediaCategory.tagsMatch(p, target) {
+                    node.parent = nil
+                }
+            } else if let p = node.parent, MediaCategory.tagsMatch(p, oldRaw) {
+                node.parent = target
+                changed = true
+            }
+            newNodes.append(node)
+        }
+        if existingTarget == nil && !newNodes.contains(where: { MediaCategory.tagsMatch($0.name, target) }) {
+            newNodes.append(TagNode(name: target, parent: nil))
+            changed = true
+        }
+        let normalized = TagCatalog.normalize(categories: tagCategories, nodes: newNodes)
+        if normalized.nodes != tagNodes {
+            changed = true
+        }
+
+        var recordsChanged = false
+        for index in records.indices where records[index].hasTag(oldRaw) {
+            var newTags: [String] = []
+            var seenTags: Set<String> = []
+            for tag in records[index].tags {
+                let replacement = MediaCategory.tagsMatch(tag, oldRaw) ? target : tag
+                let key = MediaCategory.canonicalTag(replacement).lowercased()
+                if seenTags.insert(key).inserted {
+                    newTags.append(replacement)
+                }
+            }
+            if records[index].tags != newTags {
+                records[index].tags = newTags
+                recordsChanged = true
+            }
+        }
+
+        let updatedTokens = Self.deduplicateTokens(
+            searchTokens.map { token in
+                MediaCategory.tagsMatch(token.tag, oldRaw) ? SearchTagToken(tag: target) : token
+            }
+        )
+        if updatedTokens.map(\.tag) != searchTokens.map(\.tag) {
+            searchTokens = updatedTokens
+            changed = true
+        }
+
+        guard changed || recordsChanged else { return target }
+        tagNodes = normalized.nodes
+        refreshSelectedItem()
+        catalogRevision &+= 1
+        scheduleSave()
+        let oldShown = MediaCategory.localizedTag(oldRaw, in: language)
+        let newShown = MediaCategory.localizedTag(target, in: language)
+        showToast(language.tr("已将「\(oldShown)」重命名为「\(newShown)」", "Renamed “\(oldShown)” to “\(newShown)”"))
+        return target
+    }
+
+    func setTagParent(_ rawTag: String, parent newParent: String?) {
+        guard isReady, TagCatalog.canSetParent(of: rawTag, to: newParent, in: tagNodes) else { return }
+        let targetParent = newParent.map { resolveTagName($0) }
+        var updated = tagNodes
+        guard let idx = updated.firstIndex(where: { MediaCategory.tagsMatch($0.name, rawTag) }) else { return }
+        guard updated[idx].parent != targetParent else { return }
+        updated[idx].parent = targetParent
+        if let targetParent,
+           let parentNode = updated.first(where: { MediaCategory.tagsMatch($0.name, targetParent) }) {
+            updated[idx].category = parentNode.category
+        }
+        tagNodes = TagCatalog.normalize(categories: tagCategories, nodes: updated).nodes
+        catalogRevision &+= 1
+        scheduleSave()
+    }
+
+    func moveTag(_ rawTag: String, toParent newParent: String?, before beforeSibling: String?) {
+        guard isReady, TagCatalog.canSetParent(of: rawTag, to: newParent, in: tagNodes) else { return }
+        guard let sourceIdx = tagNodes.firstIndex(where: { MediaCategory.tagsMatch($0.name, rawTag) }) else { return }
+        var node = tagNodes[sourceIdx]
+        let targetParent = newParent.map { resolveTagName($0) }
+        node.parent = targetParent
+        if let targetParent,
+           let parentNode = tagNodes.first(where: { MediaCategory.tagsMatch($0.name, targetParent) }) {
+            node.category = parentNode.category
+        }
+
+        var remaining = tagNodes
+        remaining.remove(at: sourceIdx)
+
+        if let beforeSibling,
+           !MediaCategory.tagsMatch(beforeSibling, rawTag),
+           let destIdx = remaining.firstIndex(where: { MediaCategory.tagsMatch($0.name, beforeSibling) }) {
+            remaining.insert(node, at: destIdx)
+        } else {
+            remaining.append(node)
+        }
+
+        let normalized = TagCatalog.normalize(categories: tagCategories, nodes: remaining).nodes
+        guard normalized != tagNodes else { return }
+        tagNodes = normalized
+        catalogRevision &+= 1
+        scheduleSave()
+    }
+
+    func deleteTag(_ rawTag: String) {
+        guard isReady else { return }
+        let family = expandedTagFamily(for: rawTag)
+        guard !family.isEmpty else { return }
+
+        let filteredNodes = tagNodes.filter { node in
+            !family.contains { MediaCategory.tagsMatch($0, node.name) }
+        }
+        var changed = filteredNodes.count != tagNodes.count
+
+        for index in records.indices where records[index].hasAnyTag(in: family) {
+            let filtered = records[index].tags.filter { tag in
+                !family.contains { MediaCategory.tagsMatch($0, tag) }
+            }
+            if filtered != records[index].tags {
+                records[index].tags = filtered
+                changed = true
+            }
+        }
+
+        let remainingTokens = searchTokens.filter { token in
+            !family.contains { MediaCategory.tagsMatch($0, token.tag) }
+        }
+        if remainingTokens.count != searchTokens.count {
+            searchTokens = remainingTokens
+            changed = true
+        }
+
+        guard changed else { return }
+        tagNodes = TagCatalog.normalize(categories: tagCategories, nodes: filteredNodes).nodes
+        refreshSelectedItem()
+        catalogRevision &+= 1
+        scheduleSave()
+        let shown = MediaCategory.localizedTag(rawTag, in: language)
+        showToast(language.tr("已删除标签「\(shown)」", "Deleted tag “\(shown)”"))
+    }
+
+    func toggleItemTag(_ rawTag: String, for id: UUID) {
+        guard isReady, let item = item(withID: id) else { return }
+        if item.hasTag(rawTag) {
+            let next = item.tags.filter { !MediaCategory.tagsMatch($0, rawTag) }
+            updateTags(for: id, tags: next)
+        } else {
+            let resolved = resolveTagName(rawTag)
+            guard !resolved.isEmpty else { return }
+            updateTags(for: id, tags: item.tags + [resolved])
+        }
+    }
+
+    func updateTags(for id: UUID, tags: [String]) {
+        guard isReady, let index = indices[id] else { return }
+        let normalized = MediaCategory.normalizeTags(tags)
+        guard records[index].tags != normalized else { return }
+        ensureManagedTagsInclude(normalized)
+        var item = records[index]
+        item.tags = normalized
+        item.isSample = false
+        item.updatedAt = Date()
+        replaceRecord(at: index, with: item)
     }
 
     // MARK: - CRUD
@@ -208,8 +833,10 @@ final class LibraryStore {
     func addItem(_ item: MediaItem) -> MediaItem {
         guard isReady else { return item }
         var newItem = item
+        newItem.tags = MediaCategory.normalizeTags(newItem.tags)
         newItem.createdAt = Date()
         newItem.updatedAt = newItem.createdAt
+        ensureManagedTagsInclude(newItem.tags)
         var updated = records
         updated.insert(newItem, at: 0)
         replaceRecords(with: updated)
@@ -225,12 +852,14 @@ final class LibraryStore {
             return
         }
         var item = updated
+        item.tags = MediaCategory.normalizeTags(item.tags)
         if item.coverFileName == originalCoverFileName {
             item.coverFileName = records[index].coverFileName
         } else {
             coverImports.removeValue(forKey: updated.id)?.cancel()
         }
         if touchTimestamp { item.updatedAt = Date() }
+        ensureManagedTagsInclude(item.tags)
         replaceRecord(at: index, with: item)
     }
 
@@ -325,7 +954,9 @@ final class LibraryStore {
 
     func restoreSampleItems() {
         guard isReady else { return }
-        replaceRecords(with: records + Self.makeStarterSamples())
+        let samples = Self.makeStarterSamples()
+        ensureManagedTagsInclude(samples.flatMap(\.tags))
+        replaceRecords(with: records + samples)
         scheduleSave()
         showToast(language.tr("已载入示例数据", "Loaded sample data"))
     }
@@ -364,7 +995,7 @@ final class LibraryStore {
         writing = true
         dirtySince = nil
         let version = revision
-        libraryFile.save(records) { [weak self] result in
+        libraryFile.save(records, tagCategories: tagCategories, tagNodes: tagNodes) { [weak self] result in
             guard let self, version > savedRevision else { return }
             writing = false
             switch result {
@@ -397,7 +1028,7 @@ final class LibraryStore {
         saveTask?.cancel()
         saveTask = nil
         guard let libraryFile, savedRevision != revision else { return }
-        try libraryFile.flush(records)
+        try libraryFile.flush(records, tagCategories: tagCategories, tagNodes: tagNodes)
         savedRevision = revision
         writing = false
         dirtySince = nil
@@ -441,6 +1072,7 @@ final class LibraryStore {
                 var ids = Set(indices.keys)
                 let newItems = imported.filter { ids.insert($0.id).inserted }
                 if !newItems.isEmpty {
+                    ensureManagedTagsInclude(newItems.flatMap(\.tags))
                     replaceRecords(with: records + newItems)
                     scheduleSave()
                 }

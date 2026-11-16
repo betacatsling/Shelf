@@ -6,3 +6,5 @@
 Shelf.app/
 *.zip
 *.dmg
+/Windows/node_modules/
+/Windows/dist/
