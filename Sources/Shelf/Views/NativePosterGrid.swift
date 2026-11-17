@@ -117,7 +117,9 @@ struct NativePosterGrid: NSViewRepresentable {
                 }
             }
         }
-        private var legacyScrollEnd: Task<Void, Never>?
+        private var isTrackingScroll = false
+        private var hoverResumeDeadline = ContinuousClock.Instant.now
+        private var hoverResumeTask: Task<Void, Never>?
         weak var activeHoveredView: PosterCardInteractiveView?
 
         private nonisolated(unsafe) var observers: [NSObjectProtocol] = []
@@ -142,8 +144,9 @@ struct NativePosterGrid: NSViewRepresentable {
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.legacyScrollEnd?.cancel()
-                    self.legacyScrollEnd = nil
+                    self.isTrackingScroll = true
+                    self.hoverResumeTask?.cancel()
+                    self.hoverResumeTask = nil
                     self.suspendHoverForScrolling()
                     self.updatePrefetchPlan()
                 }
@@ -156,7 +159,8 @@ struct NativePosterGrid: NSViewRepresentable {
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.restoreHoverAfterScrolling()
+                    self.isTrackingScroll = false
+                    self.scheduleHoverResume()
                 }
             }
 
@@ -174,19 +178,23 @@ struct NativePosterGrid: NSViewRepresentable {
             ) { [weak self] _ in
                 MainActor.assumeIsolated { self?.clipBoundsChanged() }
             }
-            let legacyObs = nc.addObserver(
+            let liveObs = nc.addObserver(
                 forName: NSScrollView.didLiveScrollNotification, object: scrollView, queue: .main
             ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.extendHoverSuppressionForWheel() }
+                MainActor.assumeIsolated {
+                    self?.suspendHoverForScrolling()
+                    self?.scheduleHoverResume()
+                }
             }
 
-            observers = [startObs, endObs, frameObs, scrollObs, legacyObs]
+            observers = [startObs, endObs, frameObs, scrollObs, liveObs]
         }
 
         private func suspendHoverForScrolling() {
+            guard !isLiveScrolling else { return }
+            // Let the hovered card return to its resting position without snapping.
+            clearHoveredCell(animated: true)
             isLiveScrolling = true
-            clearHoveredCell(animated: false)
-            for card in cards.values { card.cancelReflowAnimation() }
         }
 
         private func restoreHoverAfterScrolling() {
@@ -196,16 +204,21 @@ struct NativePosterGrid: NSViewRepresentable {
             }
         }
 
-        private func extendHoverSuppressionForWheel() {
-            // Trackpad and scrollbar gestures already send a start/end pair.
-            guard !isLiveScrolling || legacyScrollEnd != nil else { return }
-            if !isLiveScrolling { suspendHoverForScrolling() }
-            legacyScrollEnd?.cancel()
-            legacyScrollEnd = Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(120))
-                guard !Task.isCancelled, let self else { return }
-                self.legacyScrollEnd = nil
-                self.restoreHoverAfterScrolling()
+        private func scheduleHoverResume() {
+            // Tracking can end before momentum or the elastic bounce does. Wheel mice
+            // may also scroll without sending a tracking start or end notification.
+            guard isLiveScrolling, !isTrackingScroll else { return }
+            hoverResumeDeadline = .now + .milliseconds(120)
+            guard hoverResumeTask == nil else { return }
+            hoverResumeTask = Task { [weak self] in
+                while let deadline = self?.hoverResumeDeadline {
+                    try? await ContinuousClock().sleep(until: deadline)
+                    guard !Task.isCancelled, let self else { return }
+                    guard self.hoverResumeDeadline == deadline else { continue }
+                    self.hoverResumeTask = nil
+                    self.restoreHoverAfterScrolling()
+                    return
+                }
             }
         }
 
@@ -215,7 +228,7 @@ struct NativePosterGrid: NSViewRepresentable {
         }
 
         func refreshHoverAtCurrentMouseLocation(_ location: NSPoint? = nil) {
-            guard let gridView, let window = gridView.window else { return }
+            guard !isLiveScrolling, let gridView, let window = gridView.window else { return }
             let winPt = location ?? window.mouseLocationOutsideOfEventStream
             let point = gridView.convert(winPt, from: nil)
             let target: PosterCardInteractiveView?
@@ -378,12 +391,13 @@ struct NativePosterGrid: NSViewRepresentable {
 
         private func clipBoundsChanged() {
             guard !boundsObservationSuspended, scrollView?.contentView.bounds.size == viewportSize else { return }
+            scheduleHoverResume()
             updateMountedViews(force: false, reconfigure: false)
             updatePrefetchPlanIfNeeded()
         }
 
         func detach() {
-            legacyScrollEnd?.cancel()
+            hoverResumeTask?.cancel()
             stopPrefetching()
             for card in cards.values { card.recycle() }
         }
@@ -427,12 +441,12 @@ struct NativePosterGrid: NSViewRepresentable {
             var positions: [(IndexPath, CGRect)] = []
             layout.visitItems(in: area) { positions.append(($0, $1)) }
             let wanted = Set(positions.map(\.0))
+            var reusable: [PosterCardInteractiveView] = []
             for (path, card) in cards where !wanted.contains(path) {
                 if activeHoveredView === card { clearHoveredCell(animated: false) }
                 card.recycle()
-                card.removeFromSuperview()
                 cards.removeValue(forKey: path)
-                recycledCards.append(card)
+                reusable.append(card)
             }
 
             for (path, frame) in positions {
@@ -447,12 +461,17 @@ struct NativePosterGrid: NSViewRepresentable {
                     }
                 } else {
                     guard let poster = poster(at: path) else { continue }
-                    let card = recycledCards.popLast() ?? PosterCardInteractiveView()
+                    // Move an outgoing card directly to the incoming row when possible.
+                    let card = reusable.popLast() ?? recycledCards.popLast() ?? PosterCardInteractiveView()
                     card.frame = frame
                     configure(card, for: poster)
-                    gridView.addSubview(card)
+                    if card.superview == nil { gridView.addSubview(card) }
                     cards[path] = card
                 }
+            }
+            for card in reusable {
+                card.removeFromSuperview()
+                recycledCards.append(card)
             }
 
             let headerFrames = layout.headers(in: area)
@@ -482,8 +501,12 @@ struct NativePosterGrid: NSViewRepresentable {
 
         private func updatePrefetchPlanIfNeeded() {
             guard let visible = scrollView?.contentView.bounds else { return }
-            if let anchor = prefetchAnchor, anchor.size == visible.size,
-               abs(anchor.minY - visible.minY) < 32 { return }
+            if let anchor = prefetchAnchor, anchor.size == visible.size {
+                let delta = visible.minY - anchor.minY
+                let reversesDirection = (delta < 0) != movingUp
+                let distance = reversesDirection ? 32 : max(32, layout.rowStep / 2)
+                if abs(delta) < distance { return }
+            }
             updatePrefetchPlan()
         }
 
@@ -508,9 +531,10 @@ struct NativePosterGrid: NSViewRepresentable {
             // A row that intersects the viewport boundary belongs to both lists.
             var seen = Set<CoverManager.Request>()
             var next: [CoverManager.Request] = []
-            let prioritized = [Array(upcoming.prefix(12)), onScreen, Array(upcoming.dropFirst(12)), behind]
+            let prioritized = [upcoming.prefix(12), onScreen[...], upcoming.dropFirst(12), behind[...]]
             for paths in prioritized {
-                for path in paths where next.count < 36 {
+                for path in paths {
+                    if next.count == 36 { break }
                     guard let item = poster(at: path) else { continue }
                     let request = item.artworkRequest(language: parent.language)
                     if seen.insert(request).inserted { next.append(request) }
@@ -631,8 +655,7 @@ final class PosterGridView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        guard let coordinator, !coordinator.isLiveScrolling else { return }
-        coordinator.refreshHoverAtCurrentMouseLocation(event.locationInWindow)
+        coordinator?.refreshHoverAtCurrentMouseLocation(event.locationInWindow)
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -1307,7 +1330,23 @@ final class PosterCardInteractiveView: NSView {
                 hoverSheenLayer = sheen
             }
             hoverSheenLayer?.opacity = isHovered ? 1 : 0
-            posterTransformView.layer?.transform = t
+            if let posterLayer = posterTransformView.layer, !CATransform3DEqualToTransform(posterLayer.transform, t) {
+                let current = (posterLayer.animation(forKey: "transform") != nil
+                               ? posterLayer.presentation()?.transform : nil) ?? posterLayer.transform
+                // AppKit owns the backing layer, so explicitly animate its transform.
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                posterLayer.transform = t
+                if animated && moves && !CATransform3DEqualToTransform(current, t) {
+                    let transition = CABasicAnimation(keyPath: "transform")
+                    transition.fromValue = NSValue(caTransform3D: current)
+                    transition.toValue = NSValue(caTransform3D: t)
+                    transition.duration = 0.12
+                    transition.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    posterLayer.add(transition, forKey: "transform")
+                }
+                CATransaction.commit()
+            }
             layer?.zPosition = isHovered ? 20 : (isCardSelected ? 5 : 0)
             CATransaction.commit()
         }

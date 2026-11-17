@@ -625,16 +625,16 @@ struct MainWindowView: View {
     private func narrowingTags(for library: LibraryProjection) -> [String] {
         guard !store.filterUntaggedOnly else { return [] }
         let counts = store.searchTokens.isEmpty ? library.tagCounts : library.narrowedTagCounts
-        let activeTags = store.activeFilterTags
+        let activeKeys = Set(store.activeFilterTags.map(MediaCategory.tagMatchKey))
         let outline = TagCatalog.flattenedOutline(in: store.tagNodes)
+        let activeAncestors = Set(outline.lazy.filter { activeKeys.contains(MediaCategory.tagMatchKey($0.node.name)) }
+            .flatMap(\.ancestors).map(MediaCategory.tagMatchKey))
 
         var candidates: [(isChildOfActive: Bool, count: Int, order: Int, name: String)] = []
         for (idx, row) in outline.enumerated() {
             let name = row.node.name
             if store.hasSearchTag(name) { continue }
-            if activeTags.contains(where: { TagCatalog.isDescendant($0, of: name, in: store.tagNodes) }) {
-                continue
-            }
+            if activeAncestors.contains(MediaCategory.tagMatchKey(name)) { continue }
             let family = store.expandedTagFamily(for: name)
             let matchedCount = family.reduce(0) { $0 + counts[$1, default: 0] }
             guard matchedCount > 0 else { continue }

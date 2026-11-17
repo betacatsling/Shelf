@@ -10,6 +10,7 @@ struct QuickFindOverlay: View {
     @State private var query: String = ""
     @State private var highlightedIndex: Int = 0
     @State private var hoveredID: String? = nil
+    @State private var preparedItems: (request: LibraryQuery.QuickFindRequest, items: [MediaItem])?
 
     private enum EntryKind {
         case untagged
@@ -35,7 +36,7 @@ struct QuickFindOverlay: View {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var sections: [SectionGroup] {
+    private func sections(items: [MediaItem]) -> [SectionGroup] {
         var groups: [SectionGroup] = []
 
         if trimmedQuery.isEmpty {
@@ -108,7 +109,7 @@ struct QuickFindOverlay: View {
         var itemEntries: [Entry] = [
             Entry(id: "search-all", kind: .searchAllItems(trimmedQuery))
         ]
-        for item in store.topQuickFindItems(matching: trimmedQuery, limit: 6) {
+        for item in items {
             itemEntries.append(Entry(id: "item:\(item.id.uuidString)", kind: .item(item)))
         }
         groups.append(
@@ -123,7 +124,14 @@ struct QuickFindOverlay: View {
     }
 
     var body: some View {
-        let grouped = sections
+        let request = store.shouldProjectInBackground && !trimmedQuery.isEmpty
+            ? store.quickFindRequest(matching: trimmedQuery) : nil
+        let items = if let request {
+            preparedItems?.request == request ? (preparedItems?.items ?? []) : []
+        } else {
+            store.topQuickFindItems(matching: trimmedQuery)
+        }
+        let grouped = sections(items: items)
         let flatEntries = grouped.flatMap(\.entries)
         let safeIndex = flatEntries.isEmpty ? 0 : min(max(highlightedIndex, 0), flatEntries.count - 1)
         let indexByID = Dictionary(uniqueKeysWithValues: flatEntries.enumerated().map { ($0.element.id, $0.offset) })
@@ -196,20 +204,21 @@ struct QuickFindOverlay: View {
                 } else {
                     ScrollViewReader { proxy in
                         ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 10) {
+                            LazyVStack(alignment: .leading, spacing: 2) {
                                 ForEach(grouped) { section in
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(section.title)
-                                            .font(.system(size: 10.5, weight: .semibold))
-                                            .foregroundStyle(.secondary)
-                                            .padding(.horizontal, 8)
-                                            .padding(.bottom, 2)
-
+                                    Section {
                                         ForEach(section.entries) { entry in
                                             let rowIdx = indexByID[entry.id] ?? -1
                                             entryRow(entry, isHighlighted: rowIdx == safeIndex)
                                                 .id(entry.id)
                                         }
+                                    } header: {
+                                        Text(section.title)
+                                            .font(.system(size: 10.5, weight: .semibold))
+                                            .foregroundStyle(.secondary)
+                                            .padding(.horizontal, 8)
+                                            .padding(.top, section.id == grouped.first?.id ? 0 : 8)
+                                            .padding(.bottom, 2)
                                     }
                                 }
                             }
@@ -253,6 +262,14 @@ struct QuickFindOverlay: View {
             )
             .shadow(color: .black.opacity(0.30), radius: 26, x: 0, y: 12)
             .padding(.top, 56)
+        }
+        .task(id: request) {
+            guard let request else {
+                preparedItems = nil
+                return
+            }
+            guard let items = await store.backgroundQuickFind(for: request), !Task.isCancelled else { return }
+            preparedItems = (request, items)
         }
     }
 

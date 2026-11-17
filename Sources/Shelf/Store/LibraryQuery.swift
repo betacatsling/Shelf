@@ -139,12 +139,24 @@ struct LibraryQuery {
         let options: Options
     }
 
+    struct QuickFindRequest: Equatable, Sendable {
+        let text: String
+        let language: AppLanguage
+        let revision: UInt64
+        let notesRevision: UInt64
+    }
+
     actor Worker {
         private var query = LibraryQuery()
 
         func project(_ records: [MediaItem], request: Request) -> LibraryProjection? {
             guard !Task.isCancelled else { return nil }
             return query.project(records, request: request)
+        }
+
+        func quickFind(_ records: [MediaItem], request: QuickFindRequest) -> [MediaItem]? {
+            guard !Task.isCancelled else { return nil }
+            return LibraryQuery.quickFind(records, text: request.text, language: request.language, limit: 6)
         }
     }
 
@@ -163,11 +175,12 @@ struct LibraryQuery {
 
     private struct ProjectionKey: Equatable {
         let search: SearchKey
+        let sortRevision: UInt64
         let options: Options
     }
 
-    private var sorted: (SortKey, [Int])?
-    private var matches: (SearchKey, [Bool])?
+    private var sortOrders: [(key: SortKey, indices: [Int])] = []
+    private var searchResults: [(key: SearchKey, matches: [Bool])] = []
     private var projected: (ProjectionKey, LibraryProjection)?
 
     mutating func project(_ records: [MediaItem], request: Request) -> LibraryProjection {
@@ -178,23 +191,41 @@ struct LibraryQuery {
             notesRevision: parsed.freeText.isEmpty ? 0 : request.notesRevision,
             text: options.text
         )
-        let projectionKey = ProjectionKey(search: searchKey, options: options)
+        let projectionKey = ProjectionKey(search: searchKey, sortRevision: request.sortRevision, options: options)
         if let (key, result) = projected, key == projectionKey {
             return result
         }
 
         let sortKey = SortKey(revision: request.sortRevision, field: options.sortField, ascending: options.ascending,
                               language: options.sortField == .title ? options.language : nil)
-        if sorted?.0 != sortKey {
-            sorted = (sortKey, Self.sortedIndices(records, key: sortKey))
+        if sortOrders.first?.key.revision != sortKey.revision {
+            sortOrders.removeAll(keepingCapacity: true)
         }
-        let isSearching = !parsed.isEmpty
-        if isSearching {
-            if matches?.0 != searchKey {
-                matches = (searchKey, Self.search(records, parsed: parsed))
-            }
+        let indexes: [Int]
+        if let hit = sortOrders.firstIndex(where: { $0.key == sortKey }) {
+            indexes = sortOrders.remove(at: hit).indices
         } else {
-            matches = nil
+            indexes = Self.sortedIndices(records, key: sortKey)
+        }
+        sortOrders.append((sortKey, indexes))
+        if sortOrders.count > 4 { sortOrders.removeFirst() }
+        let isSearching = !parsed.isEmpty
+        if searchResults.first?.key.revision != searchKey.revision {
+            searchResults.removeAll(keepingCapacity: true)
+        }
+        let searchMatches: [Bool]?
+        if !isSearching {
+            searchMatches = nil
+        } else {
+            let matches: [Bool]
+            if let hit = searchResults.firstIndex(where: { $0.key == searchKey }) {
+                matches = searchResults.remove(at: hit).matches
+            } else {
+                matches = Self.search(records, parsed: parsed)
+            }
+            searchMatches = matches
+            searchResults.append((searchKey, matches))
+            if searchResults.count > 6 { searchResults.removeFirst() }
         }
 
         let usesShelves = options.status == .allShelves && !isSearching
@@ -207,39 +238,43 @@ struct LibraryQuery {
         var count = 0
 
         let category = options.destination.activeCategory
-        let indexes = sorted?.1 ?? []
-        let searchMatches = matches?.1
+        let tagGroups = options.tagGroups.map { Set($0.matchingTags.map(MediaCategory.tagMatchKey)) }
+        let hasTagFilter = options.untaggedOnly || !tagGroups.isEmpty
+        var tagMetadata: [String: (name: String, key: String)] = [:]
         for index in indexes {
             if let searchMatches, !searchMatches[index] { continue }
             let item = records[index]
             guard options.destination.includes(item) else { continue }
             let statusMatches = options.status == .allShelves || options.status == .single(item.status)
-            if statusMatches {
-                if item.tags.isEmpty {
-                    untaggedCount += 1
-                } else {
-                    for rawTag in item.tags {
-                        let tag = MediaCategory.canonicalTag(rawTag)
-                        if !tag.isEmpty {
-                            tagCounts[tag, default: 0] += 1
+            let matchesTags: Bool
+            if tagGroups.isEmpty || options.untaggedOnly {
+                matchesTags = !options.untaggedOnly || item.tags.isEmpty
+            } else {
+                matchesTags = tagGroups.allSatisfy { group in
+                    item.tags.contains { rawTag in
+                        let key = Self.tagInfo(rawTag, cache: &tagMetadata).key
+                        return !key.isEmpty && group.contains(key)
+                    }
+                }
+            }
+            if matchesTags {
+                statusCounts[item.status, default: 0] += 1
+            }
+            guard statusMatches else { continue }
+            if item.tags.isEmpty {
+                untaggedCount += 1
+            } else {
+                for rawTag in item.tags {
+                    let tag = Self.tagInfo(rawTag, cache: &tagMetadata).name
+                    if !tag.isEmpty {
+                        tagCounts[tag, default: 0] += 1
+                        if hasTagFilter && matchesTags {
+                            narrowedTagCounts[tag, default: 0] += 1
                         }
                     }
                 }
             }
-            if options.untaggedOnly {
-                if !item.tags.isEmpty { continue }
-            } else if !options.tagGroups.isEmpty {
-                if !options.tagGroups.allSatisfy({ item.hasAnyTag(in: $0.matchingTags) }) { continue }
-            }
-            statusCounts[item.status, default: 0] += 1
-            guard statusMatches else { continue }
-
-            for rawTag in item.tags {
-                let tag = MediaCategory.canonicalTag(rawTag)
-                if !tag.isEmpty {
-                    narrowedTagCounts[tag, default: 0] += 1
-                }
-            }
+            guard matchesTags else { continue }
 
             let poster = LibraryPoster(item, language: options.language)
             count += 1
@@ -268,11 +303,20 @@ struct LibraryQuery {
         }.map(\.key)
         let result = LibraryProjection(sections: sections, count: count, statusCounts: statusCounts,
                                        subtags: tags, tagCounts: tagCounts,
-                                       narrowedTagCounts: narrowedTagCounts,
+                                       narrowedTagCounts: hasTagFilter ? narrowedTagCounts : tagCounts,
                                        untaggedCount: untaggedCount,
                                        showStatusBadges: options.status == .allShelves && isSearching)
         projected = (projectionKey, result)
         return result
+    }
+
+    private static func tagInfo(_ rawTag: String, cache: inout [String: (name: String, key: String)])
+        -> (name: String, key: String) {
+        if let info = cache[rawTag] { return info }
+        let name = MediaCategory.canonicalTag(rawTag)
+        let info = (name, name.folding(options: .caseInsensitive, locale: nil))
+        cache[rawTag] = info
+        return info
     }
 
     static func matches(
@@ -299,13 +343,58 @@ struct LibraryQuery {
         return records.map { matcher.matches($0) }
     }
 
+    static func quickFind(_ records: [MediaItem], text: String, language: AppLanguage, limit: Int) -> [MediaItem] {
+        guard !text.isEmpty, limit > 0 else { return [] }
+        typealias Candidate = (rank: Int, item: MediaItem)
+        func ranksBefore(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
+            if lhs.rank != rhs.rank { return lhs.rank < rhs.rank }
+            return lhs.item.updatedAt > rhs.item.updatedAt
+        }
+
+        var matcher = SearchMatcher(parsed: ParsedSearch(text: text))
+        var results: [Candidate] = []
+        // Keep the normal six-result search bounded. Larger callers get a stable sort.
+        let keepTop = limit <= 32
+        for item in records {
+            if keepTop, results.count == limit, let last = results.last,
+               last.rank == 0, item.updatedAt <= last.item.updatedAt { continue }
+            guard matcher.matches(item) else { continue }
+            let displayTitle = item.displayTitle(in: language)
+            let displayIsDistinct = displayTitle != item.title && displayTitle != item.titleEN
+            let rank: Int
+            if item.title.hasCaseInsensitivePrefix(text) || item.titleEN.hasCaseInsensitivePrefix(text)
+                || (displayIsDistinct && displayTitle.hasCaseInsensitivePrefix(text)) {
+                rank = 0
+            } else if item.title.localizedCaseInsensitiveContains(text) || item.titleEN.localizedCaseInsensitiveContains(text)
+                || (displayIsDistinct && displayTitle.localizedCaseInsensitiveContains(text)) {
+                rank = 1
+            } else {
+                rank = 2
+            }
+            let candidate = (rank, item)
+            if keepTop {
+                let position = results.firstIndex { ranksBefore(candidate, $0) } ?? results.endIndex
+                if position < limit {
+                    results.insert(candidate, at: position)
+                    if results.count > limit { results.removeLast() }
+                }
+            } else {
+                results.append(candidate)
+            }
+        }
+        if !keepTop { results.sort(by: ranksBefore) }
+        return results.prefix(limit).map(\.item)
+    }
+
     private struct SearchMatcher {
         let parsed: ParsedSearch
         let matchingCategories: Set<MediaCategory>
+        var tagTermMatches: [[String: Bool]]
         var freeTextTagMatches: [String: Bool] = [:]
 
         init(parsed: ParsedSearch) {
             self.parsed = parsed
+            tagTermMatches = Array(repeating: [:], count: parsed.tagTerms.count)
             if parsed.freeText.isEmpty {
                 matchingCategories = []
             } else {
@@ -318,9 +407,13 @@ struct LibraryQuery {
         }
 
         mutating func matches(_ item: MediaItem) -> Bool {
-            for term in parsed.tagTerms {
+            for (index, term) in parsed.tagTerms.enumerated() {
                 let hasMatchingTag = item.tags.contains { tag in
-                    !tag.isEmpty && Self.tag(tag, matchesTerm: term)
+                    guard !tag.isEmpty else { return false }
+                    if let cached = tagTermMatches[index][tag] { return cached }
+                    let matches = Self.tag(tag, matchesTerm: term)
+                    tagTermMatches[index][tag] = matches
+                    return matches
                 }
                 if !hasMatchingTag {
                     return false

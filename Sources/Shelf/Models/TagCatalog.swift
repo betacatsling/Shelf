@@ -214,7 +214,8 @@ enum TagCatalog {
             result.append(TagNode(name: canonical, category: cleanCat, parent: cleanParent))
         }
 
-        for raw in itemTags {
+        var seenItemTags: Set<String> = []
+        for raw in itemTags where seenItemTags.insert(raw).inserted {
             let canonical = MediaCategory.canonicalTag(raw)
             guard !canonical.isEmpty else { continue }
             let key = canonical.lowercased()
@@ -284,29 +285,67 @@ enum TagCatalog {
         return nodes.filter { $0.parent?.lowercased() == targetID }
     }
 
-    static func descendants(of tagName: String, in nodes: [TagNode]) -> [String] {
-        let rootID = MediaCategory.canonicalTag(tagName).lowercased()
-        guard !rootID.isEmpty else { return [] }
-        var visited: Set<String> = [rootID]
-        var result: [String] = []
+    struct Tree {
+        private let childrenByParent: [String?: [TagNode]]
+        private let firstNameByKey: [String: String]
 
-        func walk(_ currentParent: String) {
-            for child in children(of: currentParent, in: nodes) {
-                guard visited.insert(child.id).inserted else { continue }
-                result.append(child.name)
-                walk(child.name)
-            }
+        init(_ nodes: [TagNode]) {
+            childrenByParent = Dictionary(grouping: nodes) { $0.parent?.lowercased() }
+            firstNameByKey = Dictionary(nodes.map { (MediaCategory.tagMatchKey($0.name), $0.name) },
+                                        uniquingKeysWith: { first, _ in first })
         }
 
-        walk(tagName)
-        return result
+        func descendants(of tagName: String) -> [String] {
+            let rootID = MediaCategory.canonicalTag(tagName).lowercased()
+            guard !rootID.isEmpty else { return [] }
+            var visited: Set<String> = [rootID]
+            var result: [String] = []
+
+            func walk(_ parentID: String) {
+                for child in childrenByParent[parentID] ?? [] {
+                    guard visited.insert(child.id).inserted else { continue }
+                    result.append(child.name)
+                    walk(child.id)
+                }
+            }
+
+            walk(rootID)
+            return result
+        }
+
+        func expandedFamily(for tagName: String) -> [String] {
+            let canonical = firstNameByKey[MediaCategory.tagMatchKey(tagName)] ?? MediaCategory.canonicalTag(tagName)
+            guard !canonical.isEmpty else { return [] }
+            return [canonical] + descendants(of: canonical)
+        }
+
+        func flattenedOutline(collapsedIDs: Set<String>) -> [TagOutlineRow] {
+            var result: [TagOutlineRow] = []
+            var visited: Set<String> = []
+
+            func walk(_ siblings: [TagNode], ancestors: [String]) {
+                for node in siblings {
+                    guard visited.insert(node.id).inserted else { continue }
+                    let children = childrenByParent[node.id] ?? []
+                    result.append(TagOutlineRow(node: node, depth: ancestors.count,
+                                                hasChildren: !children.isEmpty, ancestors: ancestors))
+                    if !children.isEmpty && !collapsedIDs.contains(node.id) {
+                        walk(children, ancestors: ancestors + [node.name])
+                    }
+                }
+            }
+
+            walk(childrenByParent[nil] ?? [], ancestors: [])
+            return result
+        }
+    }
+
+    static func descendants(of tagName: String, in nodes: [TagNode]) -> [String] {
+        Tree(nodes).descendants(of: tagName)
     }
 
     static func expandedFamily(for tagName: String, in nodes: [TagNode]) -> [String] {
-        let canonical = nodes.first { MediaCategory.tagsMatch($0.name, tagName) }?.name
-            ?? MediaCategory.canonicalTag(tagName)
-        guard !canonical.isEmpty else { return [] }
-        return [canonical] + descendants(of: canonical, in: nodes)
+        Tree(nodes).expandedFamily(for: tagName)
     }
 
     static func ancestors(of tagName: String, in nodes: [TagNode]) -> [String] {
@@ -349,29 +388,7 @@ enum TagCatalog {
     }
 
     static func flattenedOutline(in nodes: [TagNode], collapsedIDs: Set<String> = []) -> [TagOutlineRow] {
-        var result: [TagOutlineRow] = []
-        var visited: Set<String> = []
-
-        func walk(parentName: String?, depth: Int, ancestors: [String]) {
-            for node in children(of: parentName, in: nodes) {
-                guard visited.insert(node.id).inserted else { continue }
-                let nodeChildren = children(of: node.name, in: nodes)
-                result.append(
-                    TagOutlineRow(
-                        node: node,
-                        depth: depth,
-                        hasChildren: !nodeChildren.isEmpty,
-                        ancestors: ancestors
-                    )
-                )
-                if !nodeChildren.isEmpty && !collapsedIDs.contains(node.id) {
-                    walk(parentName: node.name, depth: depth + 1, ancestors: ancestors + [node.name])
-                }
-            }
-        }
-
-        walk(parentName: nil, depth: 0, ancestors: [])
-        return result
+        Tree(nodes).flattenedOutline(collapsedIDs: collapsedIDs)
     }
 
     static func groupedOutline(
@@ -382,20 +399,21 @@ enum TagCatalog {
     ) -> [TagCategorySection] {
         var sections: [TagCategorySection] = []
         let categoryIDs = Set(categories.map { $0.lowercased() })
+        let nodesByCategory = Dictionary(grouping: nodes) { node -> String? in
+            guard let key = node.category?.lowercased(), categoryIDs.contains(key) else { return nil }
+            return key
+        }
 
         for category in categories {
             let key = category.lowercased()
-            let catNodes = nodes.filter { $0.category?.lowercased() == key }
+            let catNodes = nodesByCategory[key] ?? []
             let rows = flattenedOutline(in: catNodes, collapsedIDs: collapsedTagIDs)
             if !rows.isEmpty || includeEmptyCategories {
                 sections.append(TagCategorySection(category: category, rows: rows))
             }
         }
 
-        let uncategorizedNodes = nodes.filter { node in
-            guard let cat = node.category else { return true }
-            return !categoryIDs.contains(cat.lowercased())
-        }
+        let uncategorizedNodes = nodesByCategory[nil] ?? []
         let uncategorizedRows = flattenedOutline(in: uncategorizedNodes, collapsedIDs: collapsedTagIDs)
         if !uncategorizedRows.isEmpty {
             sections.append(TagCategorySection(category: nil, rows: uncategorizedRows))
@@ -409,17 +427,19 @@ enum TagCatalog {
         let outline = flattenedOutline(in: nodes)
         guard !query.isEmpty else { return outline }
 
-        var ranked: [(rank: Int, order: Int, row: TagOutlineRow)] = []
-        for (idx, row) in outline.enumerated() {
+        var prefixes: [TagOutlineRow] = []
+        var namesContainingQuery: [TagOutlineRow] = []
+        var contextMatches: [TagOutlineRow] = []
+        for row in outline {
             let names = [
                 row.node.name,
                 MediaCategory.localizedTag(row.node.name, in: .zh),
                 MediaCategory.localizedTag(row.node.name, in: .en)
             ]
             if names.contains(where: { $0.hasCaseInsensitivePrefix(query) }) {
-                ranked.append((0, idx, row))
+                prefixes.append(row)
             } else if names.contains(where: { $0.localizedCaseInsensitiveContains(query) }) {
-                ranked.append((1, idx, row))
+                namesContainingQuery.append(row)
             } else {
                 var contextParts = row.ancestors.flatMap {
                     [$0, MediaCategory.localizedTag($0, in: .zh), MediaCategory.localizedTag($0, in: .en)]
@@ -433,15 +453,12 @@ enum TagCatalog {
                 }
                 let contextText = contextParts.joined(separator: " ")
                 if contextText.localizedCaseInsensitiveContains(query) {
-                    ranked.append((2, idx, row))
+                    contextMatches.append(row)
                 }
             }
         }
 
-        return ranked.sorted { lhs, rhs in
-            if lhs.rank != rhs.rank { return lhs.rank < rhs.rank }
-            return lhs.order < rhs.order
-        }.map(\.row)
+        return prefixes + namesContainingQuery + contextMatches
     }
 
     static func formattedBreadcrumb(ancestors: [String], language: AppLanguage) -> String {

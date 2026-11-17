@@ -4,6 +4,62 @@ import Testing
 
 struct LibraryTests {
     @MainActor
+    @Test func testQuickFindRanksTitlesBeforeNotesAndRefreshesAfterEdits() async {
+        let then = Date(timeIntervalSince1970: 100)
+        let prefix = MediaItem(title: "星海", titleEN: "Galaxy Archive", category: .game,
+                               status: .active, updatedAt: then)
+        let tiedPrefix = MediaItem(title: "Galaxy Two", category: .novel, status: .active, updatedAt: then)
+        let substring = MediaItem(title: "The Galaxy", category: .video, status: .active,
+                                  updatedAt: then + 10)
+        let notesOnly = MediaItem(title: "A Record", category: .video, status: .completed,
+                                  notes: "galaxy", updatedAt: then + 20)
+        let store = LibraryStore(previewItems: [notesOnly, prefix, tiedPrefix, substring])
+
+        #expect(store.topQuickFindItems(matching: " galaxy ", limit: 3).map(\.id)
+                == [prefix.id, tiedPrefix.id, substring.id])
+        #expect(store.topQuickFindItems(matching: "galaxy", limit: 64).map(\.id)
+                == [prefix.id, tiedPrefix.id, substring.id, notesOnly.id])
+
+        let stale = store.quickFindRequest(matching: "galaxy")
+        store.updateNotes(for: notesOnly.id, notes: "updated")
+        #expect(await store.backgroundQuickFind(for: stale) == nil)
+        #expect(await store.backgroundQuickFind(for: store.quickFindRequest(matching: "galaxy"))?.map(\.id)
+                == [prefix.id, tiedPrefix.id, substring.id])
+        #expect(store.topQuickFindItems(matching: "galaxy", limit: 64).map(\.id)
+                == [prefix.id, tiedPrefix.id, substring.id])
+    }
+
+    @MainActor
+    @Test func testTagUsageCountsDistinctItemsAndTracksCatalogEdits() {
+        let first = MediaItem(title: "First", category: .game, status: .active,
+                              tags: ["Collection", "Straße"], rating: 5)
+        let second = MediaItem(title: "Second", category: .novel, status: .active,
+                               tags: ["STRASSE", "Movie"])
+        let store = LibraryStore(previewItems: [first, second])
+        store.setTagParent("Straße", parent: "Collection")
+        #expect(store.usageCount(forTag: "Collection", includeDescendants: true) == 2)
+        #expect(store.usageCount(forTag: "STRASSE", in: .fiveStar) == 1)
+        #expect(store.usageCount(forTag: "电影") == 1)
+        store.subtagFilter = "Collection"
+        #expect(store.projection().count == 2)
+
+        store.updateRating(for: second.id, rating: 5)
+        #expect(store.usageCount(forTag: "Collection", in: .fiveStar, includeDescendants: true) == 2)
+        _ = store.renameTag(from: "Straße", to: "Child")
+        #expect(store.usageCount(forTag: "STRASSE") == 0)
+        #expect(store.usageCount(forTag: "Child") == 2)
+
+        store.updateTags(for: second.id, tags: [])
+        #expect(store.totalUntaggedCount == 1)
+        store.deleteTag("Collection")
+        #expect(store.totalUntaggedCount == 2)
+        let added = store.addItem(MediaItem(title: "New", category: .game, status: .backlog, tags: ["Movie"]))
+        #expect(store.usageCount(forTag: "电影", in: .category(.game)) == 1)
+        store.deleteItem(id: added.id)
+        #expect(store.usageCount(forTag: "Movie") == 0)
+    }
+
+    @MainActor
     @Test func testSearchKeepsBilingualCountsAndNotesInSync() {
         let titleOnly = MediaItem(title: "甲", titleEN: "Forest THREE", category: .novel,
                                   status: .active, subtag: "轻小说", rating: 5)

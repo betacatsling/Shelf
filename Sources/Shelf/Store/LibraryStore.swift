@@ -54,13 +54,15 @@ final class LibraryStore {
     }
     private(set) var selectedItem: MediaItem?
     private(set) var tagCategories: [String] = []
-    private(set) var tagNodes: [TagNode] = []
+    private(set) var tagNodes: [TagNode] = [] {
+        didSet { tagTree = TagCatalog.Tree(tagNodes) }
+    }
     var managedTags: [String] { tagNodes.map(\.name) }
     private(set) var toastMessage: String?
     private(set) var isLoading = false
     private(set) var loadFailed = false
 
-    private struct Counts: Equatable {
+    private struct Counts: Equatable, Sendable {
         var total = 0
         var categories: [MediaCategory: Int] = [:]
         var fiveStar = 0
@@ -83,6 +85,9 @@ final class LibraryStore {
     @ObservationIgnored private var indices: [UUID: Int] = [:]
     @ObservationIgnored private var coverReferences: [String: Int] = [:]
     @ObservationIgnored private var query = LibraryQuery()
+    @ObservationIgnored private var tagTree = TagCatalog.Tree([])
+    @ObservationIgnored private var tagUsage: (byTag: [String: [Int]], untagged: Int)?
+    @ObservationIgnored private var quickFindCache: (request: LibraryQuery.QuickFindRequest, limit: Int, items: [MediaItem])?
     private let queryWorker = LibraryQuery.Worker()
     @ObservationIgnored private var toastTask: Task<Void, Never>?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
@@ -109,18 +114,19 @@ final class LibraryStore {
         Task { [weak self] in
             do {
                 let snapshot = try await file.loadSnapshot()
-                guard let self else { return }
                 let initialItems = snapshot.items ?? Self.makeStarterSamples()
                 let baseCategories = snapshot.tagCategories ?? TagCatalog.defaultStarterCategories
                 let baseNodes = snapshot.tagNodes ?? TagCatalog.defaultStarterNodes
-                let normalized = TagCatalog.normalize(
-                    categories: baseCategories,
-                    nodes: baseNodes,
-                    mergingItemTags: initialItems.flatMap(\.tags)
-                )
+                let prepared = await Task.detached(priority: .userInitiated) {
+                    let normalized = TagCatalog.normalize(categories: baseCategories, nodes: baseNodes,
+                                                          mergingItemTags: initialItems.flatMap(\.tags))
+                    return (normalized, RecordIndex(initialItems))
+                }.value
+                guard let self else { return }
+                let (normalized, recordIndex) = prepared
                 tagCategories = normalized.categories
                 tagNodes = normalized.nodes
-                replaceRecords(with: initialItems)
+                replaceRecords(with: initialItems, index: recordIndex)
                 isLoading = false
                 if snapshot.items == nil || snapshot.tagNodes == nil { scheduleSave() }
             } catch {
@@ -149,7 +155,7 @@ final class LibraryStore {
     var isReady: Bool { !isLoading && !loadFailed }
     var isEmpty: Bool { counts.total == 0 }
     var hasSampleItems: Bool { counts.samples > 0 }
-    var totalUntaggedCount: Int { records.reduce(0) { $0 + ($1.tags.isEmpty ? 1 : 0) } }
+    var totalUntaggedCount: Int { usageIndex().untagged }
 
     func item(withID id: UUID) -> MediaItem? {
         indices[id].map { records[$0] }
@@ -272,12 +278,10 @@ final class LibraryStore {
     func selectSingleTagFilter(_ rawTag: String, switchToAllIfEmptyInCurrentDestination: Bool = false) {
         let resolved = resolveTagName(rawTag)
         guard !resolved.isEmpty else { return }
-        let family = expandedTagFamily(for: resolved)
         if switchToAllIfEmptyInCurrentDestination {
-            let hasMatchInDestination = records.contains {
-                selectedDestination.includes($0) && $0.hasAnyTag(in: family)
-            }
-            if !hasMatchInDestination && records.contains(where: { $0.hasAnyTag(in: family) }) {
+            let hasMatchInDestination = usageCount(forTag: resolved, in: selectedDestination,
+                                                   includeDescendants: true) > 0
+            if !hasMatchInDestination && usageCount(forTag: resolved, includeDescendants: true) > 0 {
                 selectedDestination = .all
                 statusFilter = .allShelves
                 searchText = ""
@@ -321,34 +325,22 @@ final class LibraryStore {
         searchText = parsed.nonTagText
     }
 
+    func quickFindRequest(matching rawQuery: String) -> LibraryQuery.QuickFindRequest {
+        .init(text: rawQuery.trimmingCharacters(in: .whitespacesAndNewlines), language: language,
+              revision: catalogRevision, notesRevision: notesRevision)
+    }
+
     func topQuickFindItems(matching rawQuery: String, limit: Int = 6) -> [MediaItem] {
-        let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, limit > 0 else { return [] }
+        let request = quickFindRequest(matching: rawQuery)
+        if let cached = quickFindCache, cached.request == request, cached.limit == limit { return cached.items }
+        let items = LibraryQuery.quickFind(records, text: request.text, language: request.language, limit: limit)
+        quickFindCache = (request, limit, items)
+        return items
+    }
 
-        func rank(_ item: MediaItem) -> Int {
-            let display = item.displayTitle(in: language)
-            if display.hasCaseInsensitivePrefix(trimmed)
-                || item.title.hasCaseInsensitivePrefix(trimmed)
-                || item.titleEN.hasCaseInsensitivePrefix(trimmed) {
-                return 0
-            }
-            if display.localizedCaseInsensitiveContains(trimmed)
-                || item.title.localizedCaseInsensitiveContains(trimmed)
-                || item.titleEN.localizedCaseInsensitiveContains(trimmed) {
-                return 1
-            }
-            return 2
-        }
-
-        let matched = records.filter { LibraryQuery.matches($0, text: trimmed) }
-        return Array(
-            matched.sorted { lhs, rhs in
-                let rl = rank(lhs), rr = rank(rhs)
-                if rl != rr { return rl < rr }
-                return lhs.updatedAt > rhs.updatedAt
-            }
-            .prefix(limit)
-        )
+    func backgroundQuickFind(for request: LibraryQuery.QuickFindRequest) async -> [MediaItem]? {
+        guard request == quickFindRequest(matching: request.text) else { return nil }
+        return await queryWorker.quickFind(records, request: request)
     }
 
     private func resolveTagName(_ rawTag: String) -> String {
@@ -383,7 +375,8 @@ final class LibraryStore {
     }
 
     func expandedTagFamily(for rawTag: String) -> [String] {
-        TagCatalog.expandedFamily(for: rawTag, in: tagNodes)
+        _ = tagNodes // The tree changes with the observable catalog.
+        return tagTree.expandedFamily(for: rawTag)
     }
 
     func tagAncestors(of rawTag: String) -> [String] {
@@ -391,7 +384,8 @@ final class LibraryStore {
     }
 
     func nestedChildCount(for rawTag: String) -> Int {
-        TagCatalog.descendants(of: rawTag, in: tagNodes).count
+        _ = tagNodes
+        return tagTree.descendants(of: rawTag).count
     }
 
     private func ensureManagedTagsInclude(_ newTags: [String]) {
@@ -422,8 +416,7 @@ final class LibraryStore {
         for tag in all {
             let isPresetForCategory = category.presetTags.contains { MediaCategory.tagsMatch($0, tag) }
             let isDefaultStarter = MediaCategory.defaultStarterTags.contains { MediaCategory.tagsMatch($0, tag) }
-            let usedInCategory = records.contains { $0.category == category && $0.hasTag(tag) }
-            if isPresetForCategory || !isDefaultStarter || usedInCategory {
+            if isPresetForCategory || !isDefaultStarter || usageCount(forTag: tag, in: .category(category)) > 0 {
                 relevant.append(tag)
             } else {
                 otherStarter.append(tag)
@@ -437,18 +430,45 @@ final class LibraryStore {
         in destination: SidebarDestination = .all,
         includeDescendants: Bool = false
     ) -> Int {
-        if includeDescendants {
-            let family = expandedTagFamily(for: rawTag)
-            guard !family.isEmpty else { return 0 }
-            return records.reduce(0) { count, item in
-                guard destination.includes(item) else { return count }
-                return count + (item.hasAnyTag(in: family) ? 1 : 0)
+        let family = includeDescendants ? expandedTagFamily(for: rawTag) : [rawTag]
+        let byTag = usageIndex().byTag
+        let lists = family.compactMap { byTag[MediaCategory.tagMatchKey($0)] }
+        guard let first = lists.first else { return 0 }
+        if lists.count == 1 {
+            return destination == .all ? first.count : countRecords(in: first, destination: destination)
+        }
+        var matches = Set(first)
+        for list in lists.dropFirst() { matches.formUnion(list) }
+        return destination == .all ? matches.count : countRecords(in: matches, destination: destination)
+    }
+
+    private func countRecords(in offsets: some Sequence<Int>, destination: SidebarDestination) -> Int {
+        var count = 0
+        for offset in offsets where destination.includes(records[offset]) { count += 1 }
+        return count
+    }
+
+    private func usageIndex() -> (byTag: [String: [Int]], untagged: Int) {
+        _ = catalogRevision
+        if let tagUsage { return tagUsage }
+        var byTag: [String: [Int]] = [:]
+        var normalizedKeys: [String: String] = [:]
+        var untagged = 0
+        for (offset, record) in records.enumerated() {
+            if record.tags.isEmpty { untagged += 1 }
+            for rawTag in record.tags {
+                let key: String
+                if let normalized = normalizedKeys[rawTag] {
+                    key = normalized
+                } else {
+                    key = MediaCategory.tagMatchKey(rawTag)
+                    normalizedKeys[rawTag] = key
+                }
+                if !key.isEmpty && byTag[key]?.last != offset { byTag[key, default: []].append(offset) }
             }
         }
-        return records.reduce(0) { count, item in
-            guard destination.includes(item) else { return count }
-            return count + (item.hasTag(rawTag) ? 1 : 0)
-        }
+        tagUsage = (byTag, untagged)
+        return (byTag, untagged)
     }
 
     func resolveCategoryName(_ rawCategory: String) -> String? {
@@ -670,6 +690,7 @@ final class LibraryStore {
         }
 
         guard changed || recordsChanged else { return target }
+        if recordsChanged { tagUsage = nil }
         tagNodes = normalized.nodes
         refreshSelectedItem()
         catalogRevision &+= 1
@@ -741,6 +762,7 @@ final class LibraryStore {
             }
             if filtered != records[index].tags {
                 records[index].tags = filtered
+                tagUsage = nil
                 changed = true
             }
         }
@@ -788,18 +810,28 @@ final class LibraryStore {
 
     // MARK: - CRUD
 
-    private func replaceRecords(with items: [MediaItem]) {
-        records = items
-        indices.removeAll(keepingCapacity: true)
-        indices.reserveCapacity(items.count)
-        coverReferences.removeAll(keepingCapacity: true)
-        var updated = Counts()
-        for (index, item) in items.enumerated() {
-            if indices[item.id] == nil { indices[item.id] = index }
-            if let name = item.coverFileName { coverReferences[name, default: 0] += 1 }
-            updated.include(item, delta: 1)
+    private struct RecordIndex: Sendable {
+        var indices: [UUID: Int] = [:]
+        var coverReferences: [String: Int] = [:]
+        var counts = Counts()
+
+        init(_ items: [MediaItem]) {
+            indices.reserveCapacity(items.count)
+            for (index, item) in items.enumerated() {
+                if indices[item.id] == nil { indices[item.id] = index }
+                if let name = item.coverFileName { coverReferences[name, default: 0] += 1 }
+                counts.include(item, delta: 1)
+            }
         }
-        if counts != updated { counts = updated }
+    }
+
+    private func replaceRecords(with items: [MediaItem], index prepared: RecordIndex? = nil) {
+        let index = prepared ?? RecordIndex(items)
+        records = items
+        indices = index.indices
+        coverReferences = index.coverReferences
+        tagUsage = nil
+        if counts != index.counts { counts = index.counts }
         refreshSelectedItem()
         sortRevision &+= 1
         catalogRevision &+= 1
@@ -808,6 +840,7 @@ final class LibraryStore {
     private func replaceRecord(at index: Int, with item: MediaItem) {
         let old = records[index]
         records[index] = item
+        if old.tags != item.tags { tagUsage = nil }
         if old.category != item.category || old.rating != item.rating || old.isSample != item.isSample {
             var updated = counts
             updated.include(old, delta: -1)

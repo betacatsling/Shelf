@@ -1,9 +1,55 @@
 import AppKit
+import QuartzCore
 import Testing
 @testable import Shelf
 
 @MainActor
 struct PosterGridTests {
+    @Test func testHoveredPosterEasesBackToRestWhenScrollingStarts() throws {
+        let (scroll, grid, coordinator, _) = makeGrid()
+        defer { coordinator.detach() }
+        let card = try #require(grid.subviews.compactMap { $0 as? PosterCardInteractiveView }.first)
+        card.layoutSubtreeIfNeeded()
+        let artwork = try #require(card.subviews.first?.layer)
+        // Use the same hit test as a pointer over the poster.
+        let window = NSWindow(contentRect: scroll.bounds, styleMask: [], backing: .buffered, defer: false)
+        window.contentView = scroll
+        coordinator.refreshHoverAtCurrentMouseLocation(card.convert(NSPoint(x: 30, y: 30), to: nil))
+        #expect(coordinator.activeHoveredView === card)
+        card.setHovered(false, animated: false)
+        card.setHovered(true, animated: false)
+        #expect(!CATransform3DIsIdentity(artwork.transform))
+
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        #expect(coordinator.activeHoveredView == nil)
+        #expect(CATransform3DIsIdentity(artwork.transform))
+        let transition = try #require(artwork.animation(forKey: "transform") as? CABasicAnimation)
+        let start = try #require(transition.fromValue as? NSValue)
+        #expect(start.caTransform3DValue.m11 > 1)
+        #expect(transition.duration > 0)
+        #expect(abs(scroll.contentView.bounds.minY) <= 0.5)
+    }
+
+    @Test func testHoverStaysSuspendedAcrossGestureEndAndMomentum() async throws {
+        let (scroll, _, coordinator, _) = makeGrid()
+        defer { coordinator.detach() }
+        let center = NotificationCenter.default
+        center.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        center.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+        // Keep the grid moving for longer than the idle delay after the gesture ends.
+        for step in 1...6 {
+            try #require(coordinator.isLiveScrolling)
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: step * 12))
+            center.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        try #require(coordinator.isLiveScrolling)
+        for _ in 0..<60 where coordinator.isLiveScrolling {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!coordinator.isLiveScrolling)
+    }
+
     @Test func testNewRowsMountBeforeEnteringViewportAndKeepTheirViews() {
         let fixture = makeGrid()
         let (scroll, grid, coordinator, posters) = fixture

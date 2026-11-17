@@ -15,6 +15,21 @@ enum CoverImageIO {
         return source.flatMap { decode(source: $0, maxPixel: maxPixel) }
     }
 
+    /// Thumbnail files produced by Shelf already have the display size and orientation.
+    static func decodeStoredThumbnail(file: URL) -> CGImage? {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(file as CFURL, options) else { return nil }
+        if let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = properties[kCGImagePropertyPixelWidth] as? Int,
+           let height = properties[kCGImagePropertyPixelHeight] as? Int,
+           max(width, height) <= thumbnailPixels,
+           (properties[kCGImagePropertyOrientation] as? Int ?? 1) == 1 {
+            let decodeOptions = [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
+            if let image = CGImageSourceCreateImageAtIndex(source, 0, decodeOptions) { return image }
+        }
+        return decode(source: source, maxPixel: thumbnailPixels)
+    }
+
     static func decode(data: Data, maxPixel: Int) -> CGImage? {
         let options = [kCGImageSourceShouldCache: false] as CFDictionary
         let source = CGImageSourceCreateWithData(data as CFData, options)

@@ -148,6 +148,10 @@ enum MediaCategory: String, Codable, CaseIterable, Identifiable {
         return !a.isEmpty && a.caseInsensitiveCompare(b) == .orderedSame
     }
 
+    static func tagMatchKey(_ rawTag: String) -> String {
+        canonicalTag(rawTag).folding(options: .caseInsensitive, locale: nil)
+    }
+
     static func normalizeTags(_ rawTags: [String]) -> [String] {
         var seen: Set<String> = []
         var result: [String] = []

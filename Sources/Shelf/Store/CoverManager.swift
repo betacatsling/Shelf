@@ -66,7 +66,7 @@ final class CoverManager {
 
     private var images: [Request: CachedImage] = [:]
     private var imageBytes = 0
-    private let maxImageBytes = 96 * 1024 * 1024
+    private let maxImageBytes = 72 * 1024 * 1024
     private let maxEntries = 256
     private var missing: [Request: ContinuousClock.Instant] = [:]
     private var accessClock: UInt64 = 0
@@ -172,7 +172,7 @@ final class CoverManager {
             let covers = coversDirectory
             let thumbnails = thumbnailsDirectory
             DispatchQueue.global(qos: qos).async { [weak self] in
-                let decoded = Self.decode(request, covers: covers, thumbnails: thumbnails)
+                let decoded = autoreleasepool { Self.decode(request, covers: covers, thumbnails: thumbnails) }
                 Task { @MainActor [weak self] in self?.finish(request, generation: version, decoded: decoded) }
             }
         }
@@ -246,7 +246,7 @@ final class CoverManager {
         switch request {
         case .thumbnail(let name):
             let size = CoverImageIO.thumbnailPixels
-            if let image = CoverImageIO.decode(file: thumbnails.appendingPathComponent(name), maxPixel: size) {
+            if let image = CoverImageIO.decodeStoredThumbnail(file: thumbnails.appendingPathComponent(name)) {
                 return Decoded(artwork: Artwork(image, forPosterWall: true))
             }
             let image = CoverImageIO.decode(file: covers.appendingPathComponent(name), maxPixel: size)
@@ -254,7 +254,7 @@ final class CoverManager {
                            generatedThumbnail: image.flatMap { CoverImageIO.jpeg($0, quality: 0.85) })
         case .preview(let name):
             let image = CoverImageIO.decode(file: covers.appendingPathComponent(name), maxPixel: CoverImageIO.previewPixels)
-                ?? CoverImageIO.decode(file: thumbnails.appendingPathComponent(name), maxPixel: CoverImageIO.thumbnailPixels)
+                ?? CoverImageIO.decodeStoredThumbnail(file: thumbnails.appendingPathComponent(name))
             return Decoded(artwork: image.map { Artwork($0, forPosterWall: false) })
         case .placeholder(let placeholder):
             return Decoded(artwork: placeholder.draw().map { Artwork($0, forPosterWall: true) })
