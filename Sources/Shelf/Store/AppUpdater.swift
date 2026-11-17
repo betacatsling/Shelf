@@ -4,7 +4,7 @@ import Foundation
 import Observation
 
 struct AppVersion: Comparable, Equatable, Hashable, CustomStringConvertible, Sendable {
-    static let fallbackCurrent = "1.2.5"
+    static let fallbackCurrent = "1.2.6"
 
     let components: [Int]
     let prerelease: String?

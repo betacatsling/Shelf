@@ -638,6 +638,10 @@ struct NativePosterGrid: NSViewRepresentable {
 final class PosterGridView: NSView {
     weak var coordinator: NativePosterGrid.Coordinator?
 
+    // AppKit's responsive scrolling path can apply several deltas at once when
+    // a trackpad gesture hands off to momentum. Keep both phases on the same
+    // path as the viewport notifications that mount the poster rows.
+    override class var isCompatibleWithResponsiveScrolling: Bool { false }
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { true }
 
