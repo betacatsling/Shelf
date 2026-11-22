@@ -516,6 +516,84 @@ struct LibraryTests {
         #expect(store.tagNodes.first(where: { $0.name == "独立佳作" })?.category == nil)
     }
 
+    @MainActor
+    @Test func testCorruptedTagsFileIsPreservedOnStartupAndFlush() async throws {
+        let fixture = try temporaryLibrary()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        let item = MediaItem(title: "Keep Me", category: .game, status: .active)
+        try LibraryFile.write([item], to: fixture.url)
+        let tagsURL = fixture.directory.appendingPathComponent("tags.json")
+        let corrupted = Data("{not valid tags json".utf8)
+        try corrupted.write(to: tagsURL)
+
+        let store = LibraryStore(storageURL: fixture.url, language: .en)
+        try await waitUntilLoaded(store)
+        store.updateNotes(for: item.id, notes: "Updated notes")
+        try store.flushPendingChanges()
+
+        #expect(try Data(contentsOf: tagsURL) == corrupted)
+    }
+
+    @MainActor
+    @Test func testCaseFoldingTagHierarchyAndCanonicalRename() {
+        let item = MediaItem(title: "Item", category: .novel, status: .active, tags: ["Straße", "CustomTag"])
+        let store = LibraryStore(previewItems: [item], language: .en)
+        _ = store.addTag("Child", parent: "STRASSE")
+
+        #expect(TagCatalog.descendants(of: "STRASSE", in: store.tagNodes) == ["Child"])
+        #expect(TagCatalog.ancestors(of: "Child", in: store.tagNodes) == ["Straße"])
+
+        let renamed = store.renameTag(from: "CustomTag", to: "Sci-Fi")
+        #expect(renamed == "科幻")
+        #expect(store.item(withID: item.id)?.tags.contains("科幻") == true)
+        #expect(store.item(withID: item.id)?.tags.contains("Sci-Fi") == false)
+    }
+
+    @MainActor
+    @Test func testQuickFindWhitespaceAndTagPrefixRanking() {
+        let titleMatch = MediaItem(title: "三体", category: .novel, status: .active, tags: ["科幻"])
+        let notesMatch = MediaItem(title: "另一本书", category: .novel, status: .active, tags: ["科幻"], notes: "提到三体")
+        let store = LibraryStore(previewItems: [notesMatch, titleMatch], language: .zh)
+
+        #expect(store.topQuickFindItems(matching: "   ").isEmpty)
+        #expect(store.topQuickFindItems(matching: "#科幻 三体").map(\.id) == [titleMatch.id, notesMatch.id])
+
+        store.selectDestination(.category(.game))
+        store.addSearchTag("Steam")
+        store.searchAllItems("三体")
+        #expect(store.selectedDestination == .all)
+        #expect(store.searchTokens.isEmpty)
+        #expect(store.searchText == "三体")
+    }
+
+    @Test func testCoverSearchProviderExtensibility() async {
+        struct StubProvider: CoverSearchProvider {
+            let bucket: Int
+            let candidates: [CoverCandidate]
+            func priority(for category: MediaCategory?) -> Int? { bucket }
+            func search(keyword: String, category: MediaCategory?, language: AppLanguage) async -> [CoverCandidate] {
+                candidates
+            }
+        }
+
+        let sharedURL = "https://example.com/shared.jpg"
+        let pHigh = StubProvider(bucket: 0, candidates: [
+            CoverCandidate(id: "a", title: "A", sourceTag: "High", previewURL: sharedURL, fullURL: sharedURL)
+        ])
+        let pLow = StubProvider(bucket: 1, candidates: [
+            CoverCandidate(id: "dup", title: "Dup", sourceTag: "Low", previewURL: sharedURL, fullURL: sharedURL),
+            CoverCandidate(id: "b", title: "B", sourceTag: "Low", previewURL: "https://example.com/b.jpg", fullURL: "https://example.com/b.jpg")
+        ])
+
+        let service = CoverSearchService(providers: [pLow, pHigh])
+        var latest: [CoverCandidate] = []
+        await service.searchCoversProgressively(query: "test", category: .game, language: .en) { batch in
+            latest = batch
+        }
+        #expect(latest.map(\.id) == ["a", "b"])
+    }
+
     private func temporaryLibrary() throws -> (directory: URL, url: URL) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("shelf-tests-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

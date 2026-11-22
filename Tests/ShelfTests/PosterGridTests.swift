@@ -100,6 +100,15 @@ struct PosterGridTests {
         #expect(abs(resized.frame.minY - clip.bounds.minY - offset) <= 1)
     }
 
+    @Test func testLayoutHandlesQueriesBeforeFirstUpdate() {
+        let layout = PosterGridLayout()
+        #expect(layout.itemPath(at: CGPoint(x: 40, y: 40)) == nil)
+        var visited = 0
+        layout.visitItems(in: CGRect(x: 0, y: 0, width: 800, height: 600)) { _, _ in visited += 1 }
+        #expect(visited == 0)
+        #expect(layout.headers(in: CGRect(x: 0, y: 0, width: 800, height: 600)).isEmpty)
+    }
+
     private func makeGrid() -> (NSScrollView, PosterGridView, NativePosterGrid.Coordinator, [LibraryPoster]) {
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 840, height: 640))
         scroll.contentView.postsFrameChangedNotifications = true
@@ -111,13 +120,16 @@ struct PosterGridTests {
                                     coverFileName: "test-cover-\(index).jpg"), language: .en)
         }
         let section = ShelfSectionModel(status: nil, title: "", totalCount: posters.count, items: posters)
-        let model = NativePosterGrid(sections: [section], collapsedShelves: [], selectedItemID: nil,
-            showStatusBadges: false, posterScale: 1, posterWidthBasis: 840, language: .en, scrollResetToken: 0,
-            onSelectItem: { _ in }, onEnsureSelectItem: { _ in }, onDeselectAll: {},
-            onDoubleClickEdit: { _ in }, onRequestReplaceCover: { _ in },
-            onToggleSectionCollapse: { _ in }, onQuickAddInSection: { _ in },
-            onChangeStatus: { _, _ in }, onChangeRating: { _, _ in }, onUpdateCoverFileName: { _, _ in },
-            onImportCover: { _, _ in }, onDeleteItem: { _ in }, onShowToast: { _ in })
+        let model = NativePosterGrid(
+            sections: [section],
+            collapsedShelves: [],
+            selectedItemID: nil,
+            showStatusBadges: false,
+            posterScale: 1,
+            posterWidthBasis: 840,
+            language: .en,
+            scrollResetToken: 0
+        )
         let coordinator = model.makeCoordinator()
         coordinator.gridView = grid
         coordinator.scrollView = scroll

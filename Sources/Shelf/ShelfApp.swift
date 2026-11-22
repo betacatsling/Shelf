@@ -44,7 +44,8 @@ struct ShelfApp: App {
     @State private var store = LibraryStore()
     @State private var updater = AppUpdater()
     @State private var showAddSheet = false
-    @AppStorage("shelf.posterScale") private var posterScale: Double = 1.0
+    @AppStorage(PosterScaleConfig.storageKey) private var posterScale: Double = PosterScaleConfig.defaultScale
+    @AppStorage(TimelineZoomConfig.storageKey) private var timelineZoom: Double = TimelineZoomConfig.defaultZoom
 
     private var lang: AppLanguage { store.language }
 
@@ -143,6 +144,18 @@ struct ShelfApp: App {
 
                 Divider()
 
+                Button(LibraryViewMode.grid.title(in: lang)) {
+                    store.viewMode = .grid
+                }
+                .keyboardShortcut("1", modifiers: [.command, .option])
+
+                Button(LibraryViewMode.timeline.title(in: lang)) {
+                    store.viewMode = .timeline
+                }
+                .keyboardShortcut("2", modifiers: [.command, .option])
+
+                Divider()
+
                 Button(SidebarDestination.all.title(in: lang)) {
                     store.selectDestination(.all)
                 }
@@ -197,18 +210,30 @@ struct ShelfApp: App {
 
                 Divider()
 
-                Button(lang.tr("放大海报", "Zoom In")) {
-                    posterScale = min(1.36, posterScale + 0.08)
+                Button(store.viewMode == .timeline ? lang.tr("拉近时间轴", "Zoom In Timeline") : lang.tr("放大海报", "Zoom In")) {
+                    if store.viewMode == .timeline {
+                        timelineZoom = TimelineZoomConfig.zoomIn(from: timelineZoom)
+                    } else {
+                        posterScale = PosterScaleConfig.zoomIn(from: posterScale)
+                    }
                 }
                 .keyboardShortcut("+", modifiers: [.command])
 
-                Button(lang.tr("缩小海报", "Zoom Out")) {
-                    posterScale = max(0.78, posterScale - 0.08)
+                Button(store.viewMode == .timeline ? lang.tr("拉远时间轴", "Zoom Out Timeline") : lang.tr("缩小海报", "Zoom Out")) {
+                    if store.viewMode == .timeline {
+                        timelineZoom = TimelineZoomConfig.zoomOut(from: timelineZoom)
+                    } else {
+                        posterScale = PosterScaleConfig.zoomOut(from: posterScale)
+                    }
                 }
                 .keyboardShortcut("-", modifiers: [.command])
 
-                Button(lang.tr("默认海报尺寸", "Actual Size")) {
-                    posterScale = 1.0
+                Button(store.viewMode == .timeline ? lang.tr("默认时间轴缩放", "Reset Timeline Zoom") : lang.tr("默认海报尺寸", "Actual Size")) {
+                    if store.viewMode == .timeline {
+                        timelineZoom = TimelineZoomConfig.defaultZoom
+                    } else {
+                        posterScale = PosterScaleConfig.defaultScale
+                    }
                 }
                 .keyboardShortcut("0", modifiers: [.command])
             }

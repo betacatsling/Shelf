@@ -7,21 +7,10 @@ struct PosterPlaceholder: Hashable, Sendable {
     let paletteSeed: Int
     let language: AppLanguage
 
-    private static let palettes: [([CGFloat], [CGFloat], [CGFloat], [CGFloat])] = [
-        ([0.16, 0.22, 0.45, 1], [0.10, 0.13, 0.28, 1], [0.06, 0.07, 0.15, 1], [0.42, 0.58, 0.98, 1]),
-        ([0.12, 0.34, 0.30, 1], [0.08, 0.21, 0.20, 1], [0.04, 0.11, 0.12, 1], [0.32, 0.85, 0.68, 1]),
-        ([0.44, 0.15, 0.24, 1], [0.26, 0.09, 0.16, 1], [0.13, 0.05, 0.09, 1], [0.96, 0.42, 0.54, 1]),
-        ([0.46, 0.27, 0.14, 1], [0.28, 0.16, 0.09, 1], [0.14, 0.08, 0.05, 1], [0.96, 0.68, 0.32, 1]),
-        ([0.32, 0.18, 0.44, 1], [0.19, 0.11, 0.29, 1], [0.09, 0.06, 0.16, 1], [0.75, 0.48, 0.98, 1]),
-        ([0.13, 0.31, 0.42, 1], [0.08, 0.19, 0.28, 1], [0.05, 0.10, 0.16, 1], [0.35, 0.76, 0.96, 1]),
-        ([0.28, 0.25, 0.22, 1], [0.16, 0.15, 0.14, 1], [0.08, 0.08, 0.08, 1], [0.88, 0.74, 0.50, 1]),
-        ([0.48, 0.21, 0.19, 1], [0.29, 0.12, 0.14, 1], [0.14, 0.07, 0.09, 1], [0.98, 0.55, 0.38, 1])
-    ]
-
     func draw() -> CGImage? {
         let w = 320
         let h = 480
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(
             data: nil,
             width: w,
@@ -34,11 +23,11 @@ struct PosterPlaceholder: Hashable, Sendable {
             return nil
         }
 
-        let p = Self.palettes[Int(paletteSeed.magnitude % UInt(Self.palettes.count))]
+        let palette = CoverPalette.forSeed(paletteSeed)
 
         if let grad = CGGradient(
             colorSpace: colorSpace,
-            colorComponents: p.0 + p.1 + p.2,
+            colorComponents: palette.top.cgComponents() + palette.middle.cgComponents() + palette.bottom.cgComponents(),
             locations: [0.0, 0.52, 1.0],
             count: 3
         ) {
@@ -52,7 +41,7 @@ struct PosterPlaceholder: Hashable, Sendable {
 
         if let radial = CGGradient(
             colorSpace: colorSpace,
-            colorComponents: [p.3[0], p.3[1], p.3[2], 0.30, p.3[0], p.3[1], p.3[2], 0.0],
+            colorComponents: palette.glow.cgComponents(alpha: 0.30) + palette.glow.cgComponents(alpha: 0.0),
             locations: [0.0, 1.0],
             count: 2
         ) {
@@ -79,7 +68,7 @@ struct PosterPlaceholder: Hashable, Sendable {
         ring1.stroke()
 
         let ring2 = NSBezierPath(ovalIn: NSRect(x: centerPt.x - 62, y: centerPt.y - 62, width: 124, height: 124))
-        NSColor(srgbRed: p.3[0], green: p.3[1], blue: p.3[2], alpha: 0.18).setStroke()
+        palette.glow.nsColor(alpha: 0.18).setStroke()
         ring2.lineWidth = 1.4
         ring2.stroke()
 
@@ -100,7 +89,7 @@ struct PosterPlaceholder: Hashable, Sendable {
         // Top pill tag
         let pillText = subtag.isEmpty
             ? category.title(in: language)
-            : MediaCategory.localizedSubtag(subtag, in: language)
+            : MediaCategory.localizedTag(subtag, in: language)
         let pillAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 18, weight: .semibold),
             .foregroundColor: NSColor.white.withAlphaComponent(0.86)
@@ -141,7 +130,7 @@ struct PosterPlaceholder: Hashable, Sendable {
         (displayTitle as NSString).draw(with: drawTitleRect, options: [.usesLineFragmentOrigin], attributes: titleAttrs)
 
         let barRect = NSRect(x: 24, y: 26 + titleH + 12, width: 42, height: 3)
-        NSColor(srgbRed: p.3[0], green: p.3[1], blue: p.3[2], alpha: 0.72).setFill()
+        palette.glow.nsColor(alpha: 0.72).setFill()
         NSBezierPath(rect: barRect).fill()
 
         return ctx.makeImage()

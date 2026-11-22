@@ -57,22 +57,6 @@ enum MediaCategory: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    func subtagFieldTitle(in lang: AppLanguage) -> String {
-        switch self {
-        case .game: return lang.tr("游玩平台（可选）", "Platform (Optional)")
-        case .novel: return lang.tr("文字体裁（可选）", "Genre (Optional)")
-        case .video: return lang.tr("影像类型（可选）", "Format (Optional)")
-        }
-    }
-
-    func subtagShortLabel(in lang: AppLanguage) -> String {
-        switch self {
-        case .game: return lang.tr("平台", "Platform")
-        case .novel: return lang.tr("体裁", "Genre")
-        case .video: return lang.tr("类型", "Format")
-        }
-    }
-
     /// Canonical storage values for starter tags (localized dynamically at display time)
     var presetTags: [String] {
         switch self {
@@ -85,19 +69,9 @@ enum MediaCategory: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    static let defaultStarterTags: [String] = {
-        var seen: Set<String> = []
-        var result: [String] = []
-        for tag in allCases.flatMap(\.presetTags) {
-            let key = tag.lowercased()
-            if seen.insert(key).inserted {
-                result.append(tag)
-            }
-        }
-        return result
-    }()
+    static let defaultStarterTags: [String] = normalizeTags(allCases.flatMap(\.presetTags))
 
-    private static let zhToEnSubtagMap: [String: String] = [
+    private static let zhToEnTagMap: [String: String] = [
         "平台": "Platform",
         "体裁": "Genre",
         "形式": "Format",
@@ -116,9 +90,9 @@ enum MediaCategory: String, Codable, CaseIterable, Identifiable {
         "动画电影": "Animated Film"
     ]
 
-    private static let enToZhSubtagMap: [String: String] = {
+    private static let enToZhTagMap: [String: String] = {
         var reversed: [String: String] = [:]
-        for (k, v) in zhToEnSubtagMap {
+        for (k, v) in zhToEnTagMap {
             reversed[v.lowercased()] = k
         }
         return reversed
@@ -126,10 +100,10 @@ enum MediaCategory: String, Codable, CaseIterable, Identifiable {
 
     private static let canonicalTagLookup: [String: String] = {
         var lookup: [String: String] = [:]
-        for tag in defaultStarterTags {
+        for tag in allCases.flatMap(\.presetTags) {
             lookup[tag.lowercased()] = tag
         }
-        for (zh, en) in zhToEnSubtagMap {
+        for (zh, en) in zhToEnTagMap {
             lookup[zh.lowercased()] = zh
             lookup[en.lowercased()] = zh
         }
@@ -137,19 +111,19 @@ enum MediaCategory: String, Codable, CaseIterable, Identifiable {
     }()
 
     static func canonicalTag(_ rawTag: String) -> String {
-        let trimmed = rawTag.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = rawTag.trimmed
         guard !trimmed.isEmpty else { return "" }
         return canonicalTagLookup[trimmed.lowercased()] ?? trimmed
     }
 
-    static func tagsMatch(_ lhs: String, _ rhs: String) -> Bool {
-        let a = canonicalTag(lhs)
-        let b = canonicalTag(rhs)
-        return !a.isEmpty && a.caseInsensitiveCompare(b) == .orderedSame
-    }
-
     static func tagMatchKey(_ rawTag: String) -> String {
         canonicalTag(rawTag).folding(options: .caseInsensitive, locale: nil)
+    }
+
+    static func tagsMatch(_ lhs: String, _ rhs: String) -> Bool {
+        let a = tagMatchKey(lhs)
+        let b = tagMatchKey(rhs)
+        return !a.isEmpty && a == b
     }
 
     static func normalizeTags(_ rawTags: [String]) -> [String] {
@@ -158,41 +132,23 @@ enum MediaCategory: String, Codable, CaseIterable, Identifiable {
         for raw in rawTags {
             let tag = canonicalTag(raw)
             guard !tag.isEmpty else { continue }
-            let key = tag.lowercased()
+            let key = tagMatchKey(tag)
             if seen.insert(key).inserted {
                 result.append(tag)
             }
         }
         return result
-    }
-
-    static func mergeTagLists(_ primary: [String], with additional: [String]) -> [String] {
-        var result = normalizeTags(primary)
-        var seen = Set(result.map { $0.lowercased() })
-        for raw in additional {
-            let tag = canonicalTag(raw)
-            guard !tag.isEmpty else { continue }
-            let key = tag.lowercased()
-            if seen.insert(key).inserted {
-                result.append(tag)
-            }
-        }
-        return result
-    }
-
-    static func localizedSubtag(_ rawTag: String, in lang: AppLanguage) -> String {
-        let trimmed = rawTag.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-        switch lang {
-        case .zh:
-            return enToZhSubtagMap[trimmed.lowercased()] ?? trimmed
-        case .en:
-            return zhToEnSubtagMap[trimmed] ?? trimmed
-        }
     }
 
     static func localizedTag(_ rawTag: String, in lang: AppLanguage) -> String {
-        localizedSubtag(rawTag, in: lang)
+        let trimmed = rawTag.trimmed
+        guard !trimmed.isEmpty else { return "" }
+        switch lang {
+        case .zh:
+            return enToZhTagMap[trimmed.lowercased()] ?? trimmed
+        case .en:
+            return zhToEnTagMap[trimmed] ?? trimmed
+        }
     }
 
     func statusLabel(for status: TrackingStatus, in lang: AppLanguage = .zh) -> String {
@@ -251,18 +207,25 @@ enum TrackingStatus: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    var tintColor: Color {
+    var tintRGB: RGBColor {
         switch self {
-        case .active: return Color(red: 0.20, green: 0.78, blue: 0.45)
-        case .completed: return Color(red: 0.34, green: 0.56, blue: 0.98)
-        case .unfinished: return Color(red: 0.92, green: 0.45, blue: 0.36)
-        case .backlog: return Color(red: 0.95, green: 0.68, blue: 0.22)
+        case .active: return RGBColor(red: 0.20, green: 0.78, blue: 0.45)
+        case .completed: return RGBColor(red: 0.34, green: 0.56, blue: 0.98)
+        case .unfinished: return RGBColor(red: 0.92, green: 0.45, blue: 0.36)
+        case .backlog: return RGBColor(red: 0.95, green: 0.68, blue: 0.22)
         }
     }
 
-    func localizedTitle(in category: MediaCategory?, lang: AppLanguage = .zh) -> String {
+    var tintColor: Color {
+        tintRGB.swiftUIColor
+    }
+
+    func localizedTitle(in category: MediaCategory?, lang: AppLanguage = .zh, compact: Bool = false) -> String {
         if let category {
             return category.statusLabel(for: self, in: lang)
+        }
+        if compact && lang == .en && self == .active {
+            return "Active"
         }
         return genericTitle(in: lang)
     }
@@ -273,11 +236,43 @@ enum SidebarDestination: Hashable {
     case category(MediaCategory)
     case fiveStar
 
+    static let allDestinations: [SidebarDestination] = [
+        .all,
+        .category(.game),
+        .category(.novel),
+        .category(.video),
+        .fiveStar
+    ]
+
+    var stableID: String {
+        switch self {
+        case .all: return "all"
+        case .category(let cat): return "category:\(cat.rawValue)"
+        case .fiveStar: return "fiveStar"
+        }
+    }
+
     func title(in lang: AppLanguage = .zh) -> String {
         switch self {
         case .all: return lang.tr("全部", "All")
         case .category(let cat): return cat.title(in: lang)
         case .fiveStar: return lang.tr("五星作品", "5-Star")
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .all: return "square.grid.2x2.fill"
+        case .category(let cat): return cat.systemImage
+        case .fiveStar: return "star.fill"
+        }
+    }
+
+    var tintColor: Color {
+        switch self {
+        case .all: return .accentColor
+        case .category(let cat): return cat.accentColor
+        case .fiveStar: return ShelfTheme.starGold
         }
     }
 
@@ -290,6 +285,27 @@ enum SidebarDestination: Hashable {
 enum StatusFilterOption: Hashable {
     case allShelves
     case single(TrackingStatus)
+}
+
+enum LibraryViewMode: String, CaseIterable, Identifiable {
+    case grid = "grid"
+    case timeline = "timeline"
+
+    var id: String { rawValue }
+
+    func title(in lang: AppLanguage) -> String {
+        switch self {
+        case .grid: return lang.tr("海报墙", "Grid")
+        case .timeline: return lang.tr("时间线", "Timeline")
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .grid: return "square.grid.2x2"
+        case .timeline: return "calendar.day.timeline.left"
+        }
+    }
 }
 
 enum LibrarySortField: String, CaseIterable, Identifiable {
@@ -344,9 +360,31 @@ struct MediaItem: Identifiable, Codable, Equatable, Hashable, Sendable {
     var notes: String
     var coverFileName: String?
     var paletteSeed: Int
+    var startedAt: Date?
+    var finishedAt: Date?
     var createdAt: Date
     var updatedAt: Date
     var isSample: Bool
+
+    var hasTimelineDates: Bool {
+        startedAt != nil || finishedAt != nil
+    }
+
+    func effectiveTimelineSpan(now: Date = Date()) -> (start: Date, end: Date, isOngoing: Bool)? {
+        switch (startedAt, finishedAt) {
+        case (.some(let s), .some(let f)):
+            return (min(s, f), max(s, f), false)
+        case (.some(let s), nil):
+            if status == .active {
+                return (s, max(s, now), true)
+            }
+            return (s, s, false)
+        case (nil, .some(let f)):
+            return (f, f, false)
+        case (nil, nil):
+            return nil
+        }
+    }
 
     var subtag: String {
         get { tags.first ?? "" }
@@ -376,6 +414,8 @@ struct MediaItem: Identifiable, Codable, Equatable, Hashable, Sendable {
         notes: String = "",
         coverFileName: String? = nil,
         paletteSeed: Int = Int.random(in: 0..<1000),
+        startedAt: Date? = nil,
+        finishedAt: Date? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         isSample: Bool = false
@@ -395,13 +435,15 @@ struct MediaItem: Identifiable, Codable, Equatable, Hashable, Sendable {
         self.notes = notes
         self.coverFileName = coverFileName
         self.paletteSeed = paletteSeed
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.isSample = isSample
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, titleEN, category, status, tags, subtag, rating, notes, coverFileName, paletteSeed, createdAt, updatedAt, isSample
+        case id, title, titleEN, category, status, tags, subtag, rating, notes, coverFileName, paletteSeed, startedAt, finishedAt, createdAt, updatedAt, isSample
     }
 
     init(from decoder: Decoder) throws {
@@ -423,6 +465,8 @@ struct MediaItem: Identifiable, Codable, Equatable, Hashable, Sendable {
         self.notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
         self.coverFileName = try container.decodeIfPresent(String.self, forKey: .coverFileName)
         self.paletteSeed = try container.decodeIfPresent(Int.self, forKey: .paletteSeed) ?? 0
+        self.startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt)
+        self.finishedAt = try container.decodeIfPresent(Date.self, forKey: .finishedAt)
         self.createdAt = try container.decode(Date.self, forKey: .createdAt)
         self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
         self.isSample = try container.decodeIfPresent(Bool.self, forKey: .isSample) ?? false
@@ -442,6 +486,8 @@ struct MediaItem: Identifiable, Codable, Equatable, Hashable, Sendable {
         try container.encode(notes, forKey: .notes)
         try container.encodeIfPresent(coverFileName, forKey: .coverFileName)
         try container.encode(paletteSeed, forKey: .paletteSeed)
+        try container.encodeIfPresent(startedAt, forKey: .startedAt)
+        try container.encodeIfPresent(finishedAt, forKey: .finishedAt)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
         try container.encode(isSample, forKey: .isSample)
@@ -478,7 +524,7 @@ struct SearchTagToken: Identifiable, Hashable, Sendable {
         self.tag = MediaCategory.canonicalTag(tag)
     }
 
-    var id: String { tag.lowercased() }
+    var id: String { MediaCategory.tagMatchKey(tag) }
 
     static func == (lhs: SearchTagToken, rhs: SearchTagToken) -> Bool {
         lhs.id == rhs.id

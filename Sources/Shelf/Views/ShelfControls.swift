@@ -60,7 +60,10 @@ struct ShelfButtonStyle: ButtonStyle {
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isHovered)
                 .onHover { hovering in
-                    isHovered = hovering
+                    isHovered = isEnabled && hovering
+                }
+                .onChange(of: isEnabled) { _, enabled in
+                    if !enabled { isHovered = false }
                 }
         }
 
@@ -69,7 +72,7 @@ struct ShelfButtonStyle: ButtonStyle {
             case .primary:
                 return .white
             case .destructive:
-                return Color(red: 0.95, green: 0.32, blue: 0.32)
+                return ShelfTheme.destructiveRed
             case .secondary:
                 return .primary.opacity(0.92)
             case .subtle:
@@ -114,46 +117,6 @@ struct ShelfButtonStyle: ButtonStyle {
                 return .clear
             }
         }
-    }
-}
-
-/// Capsule chip button with guaranteed full-capsule hit target and hover state.
-struct ShelfChipButton: View {
-    let title: String
-    let isSelected: Bool
-    let action: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(isHovered ? 0.95 : 0.78))
-                .background(
-                    Capsule()
-                        .fill(backgroundFill)
-                )
-                .overlay(
-                    Capsule()
-                        .strokeBorder(
-                            isSelected ? Color.white.opacity(0.18) : Color.primary.opacity(isHovered ? 0.18 : 0.10),
-                            lineWidth: 0.8
-                        )
-                )
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-    }
-
-    private var backgroundFill: Color {
-        if isSelected {
-            return Color.accentColor
-        }
-        return isHovered ? Color.primary.opacity(0.10) : Color.primary.opacity(0.05)
     }
 }
 
@@ -287,6 +250,7 @@ struct ShelfSegmentedControl<Option: Hashable>: View {
             }
             .buttonStyle(.plain)
             .onHover { isHovered = $0 }
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
 
         private var cellBackground: Color {
@@ -334,6 +298,8 @@ struct ShelfSortControl: View {
             }
             .buttonStyle(.plain)
             .onHover { isFieldHovered = $0 }
+            .accessibilityLabel(language.tr("排序方式", "Sort By"))
+            .help(language.tr("选择排序方式", "Choose sort field"))
 
             Rectangle()
                 .fill(Color.primary.opacity(0.13))
@@ -352,6 +318,8 @@ struct ShelfSortControl: View {
             }
             .buttonStyle(.plain)
             .onHover { isDirHovered = $0 }
+            .accessibilityLabel(sortAscending ? sortField.ascendingLabel(in: language) : sortField.descendingLabel(in: language))
+            .help(sortAscending ? sortField.ascendingLabel(in: language) : sortField.descendingLabel(in: language))
         }
         .fixedSize()
         .background(
@@ -374,21 +342,13 @@ struct ShelfSortControl: View {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        let handler = SortMenuActionTarget(
-            onSelectField: onSelectField,
-            onSetAscending: onSetAscending
-        )
-
         for field in LibrarySortField.allCases {
-            let item = NSMenuItem(
+            menu.addItem(ClosureMenuItem(
                 title: field.menuTitle(in: language),
-                action: #selector(SortMenuActionTarget.pickField(_:)),
-                keyEquivalent: ""
-            )
-            item.target = handler
-            item.representedObject = field.rawValue
-            item.state = (field == sortField) ? .on : .off
-            menu.addItem(item)
+                state: field == sortField ? .on : .off
+            ) {
+                onSelectField(field)
+            })
         }
 
         menu.addItem(.separator())
@@ -399,50 +359,20 @@ struct ShelfSortControl: View {
             : [(sortField.descendingLabel(in: language), false), (sortField.ascendingLabel(in: language), true)]
 
         for opt in options {
-            let item = NSMenuItem(
+            menu.addItem(ClosureMenuItem(
                 title: opt.title,
-                action: #selector(SortMenuActionTarget.pickDirection(_:)),
-                keyEquivalent: ""
-            )
-            item.target = handler
-            item.representedObject = NSNumber(value: opt.asc)
-            item.state = (sortAscending == opt.asc) ? .on : .off
-            menu.addItem(item)
+                state: sortAscending == opt.asc ? .on : .off
+            ) {
+                onSetAscending(opt.asc)
+            })
         }
 
-        withExtendedLifetime(handler) {
-            if let anchor = anchorNSView {
-                let yPos: CGFloat = anchor.isFlipped ? (anchor.bounds.height + 4) : -4
-                menu.popUp(positioning: nil, at: NSPoint(x: 0, y: yPos), in: anchor)
-            } else if let event = NSApp.currentEvent {
-                NSMenu.popUpContextMenu(menu, with: event, for: NSApp.keyWindow?.contentView ?? NSView())
-            }
+        if let anchor = anchorNSView {
+            let yPos: CGFloat = anchor.isFlipped ? (anchor.bounds.height + 4) : -4
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: yPos), in: anchor)
+        } else if let event = NSApp.currentEvent {
+            NSMenu.popUpContextMenu(menu, with: event, for: NSApp.keyWindow?.contentView ?? NSView())
         }
-    }
-}
-
-private final class SortMenuActionTarget: NSObject {
-    let onSelectField: (LibrarySortField) -> Void
-    let onSetAscending: (Bool) -> Void
-
-    init(
-        onSelectField: @escaping (LibrarySortField) -> Void,
-        onSetAscending: @escaping (Bool) -> Void
-    ) {
-        self.onSelectField = onSelectField
-        self.onSetAscending = onSetAscending
-    }
-
-    @objc func pickField(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let field = LibrarySortField(rawValue: raw)
-        else { return }
-        onSelectField(field)
-    }
-
-    @objc func pickDirection(_ sender: NSMenuItem) {
-        guard let num = sender.representedObject as? NSNumber else { return }
-        onSetAscending(num.boolValue)
     }
 }
 
@@ -464,4 +394,6 @@ private struct MenuAnchorRepresentable: NSViewRepresentable {
             }
         }
     }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: ()) {}
 }

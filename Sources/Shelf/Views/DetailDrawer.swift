@@ -60,6 +60,10 @@ private struct DetailDrawerHost: NSViewRepresentable {
         view.update(item: item, initialPosterID: initialPosterID, store: store, reduceMotion: reduceMotion,
                     onReplaceCover: onReplaceCover, onDockChange: onDockChange)
     }
+
+    static func dismantleNSView(_ nsView: DetailDrawerClipView, coordinator: ()) {
+        nsView.tearDown()
+    }
 }
 
 /// Keep the panel at its final size and move that backing layer as a unit.
@@ -92,6 +96,21 @@ final class DetailDrawerClipView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        preparation?.cancel()
+        docking?.cancel()
+    }
+
+    func tearDown() {
+        preparation?.cancel()
+        preparation = nil
+        docking?.cancel()
+        docking = nil
+        onDockChange = nil
+        displayedItem = nil
+        panel.rootView = HostedDetailPanel(content: nil)
     }
 
     override func layout() {

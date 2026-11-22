@@ -20,11 +20,19 @@ struct ItemDetailPanel: View {
     @State private var showDeleteConfirm = false
 
     @State private var showTitlePopover = false
+    @State private var titleEditingItemID: UUID? = nil
     @State private var draftTitleZH: String = ""
     @State private var draftTitleEN: String = ""
 
     @State private var showCategoryPopover = false
     @State private var showSubtagPopover = false
+    @State private var showTimelinePopover = false
+    @State private var timelineEditingItemID: UUID? = nil
+    @State private var isTimelineHovered = false
+    @State private var draftHasStartDate = false
+    @State private var draftStartDate = Date()
+    @State private var draftHasFinishDate = false
+    @State private var draftFinishDate = Date()
 
     init(item: MediaItem, isShowing: Bool, onReplaceCover: @escaping () -> Void, onClose: @escaping () -> Void) {
         self.item = item
@@ -38,6 +46,8 @@ struct ItemDetailPanel: View {
 
     private static let dateFormatter: DateFormatter = {
         let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.calendar = Calendar(identifier: .gregorian)
         df.dateFormat = "yyyy-MM-dd"
         return df
     }()
@@ -50,6 +60,7 @@ struct ItemDetailPanel: View {
                 }
                 statusSwitcherSection.padding(.horizontal, 20)
                 ratingSection.padding(.horizontal, 20)
+                timelineSection.padding(.horizontal, 20)
                 notesSection.padding(.horizontal, 20)
                 metadataFooter.padding(.horizontal, 20)
             }
@@ -69,7 +80,7 @@ struct ItemDetailPanel: View {
                 draftNotes = newValue
             }
         }
-        .onChange(of: showTitlePopover || showCategoryPopover || showSubtagPopover) { _, presented in
+        .onChange(of: showTitlePopover || showCategoryPopover || showSubtagPopover || showTimelinePopover) { _, presented in
             store.isDetailPopoverPresented = presented
         }
         .onDisappear {
@@ -91,6 +102,7 @@ struct ItemDetailPanel: View {
         showTitlePopover = false
         showCategoryPopover = false
         showSubtagPopover = false
+        showTimelinePopover = false
         showDeleteConfirm = false
     }
 
@@ -195,13 +207,18 @@ struct ItemDetailPanel: View {
                 .help(lang.tr("点击更换封面，或直接拖入图片", "Click to change cover, or drop an image here"))
                 .onDrop(of: [.fileURL, .image, .url], isTargeted: $isDropTargeted) { providers in
                     CoverManager.shared.readDroppedImage(from: providers) { source in
-                        if let source { store.importCover(source, for: item.id) }
+                        if let source {
+                            store.importCover(source, for: item.id)
+                        } else {
+                            store.showToast(lang.tr("无法识别拖入的图片", "Could not recognize the dropped image"))
+                        }
                     }
                 }
 
                 VStack(spacing: 8) {
                     // Clickable Title & Subtitle (inline popover rename)
                     Button {
+                        titleEditingItemID = item.id
                         draftTitleZH = item.title
                         draftTitleEN = item.titleEN
                         showTitlePopover = true
@@ -467,17 +484,21 @@ struct ItemDetailPanel: View {
     }
 
     private func commitTitleEdit() {
-        let cleanZH = draftTitleZH.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanEN = draftTitleEN.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let targetID = titleEditingItemID else { return }
+        titleEditingItemID = nil
+        guard let target = store.item(withID: targetID) else { return }
+
+        let cleanZH = draftTitleZH.trimmed
+        let cleanEN = draftTitleEN.trimmed
         guard !cleanZH.isEmpty || !cleanEN.isEmpty else { return }
         let finalZH = cleanZH.isEmpty ? cleanEN : cleanZH
-        guard finalZH != item.title || cleanEN != item.titleEN else { return }
+        guard finalZH != target.title || cleanEN != target.titleEN else { return }
 
-        var updated = item
+        var updated = target
         updated.title = finalZH
         updated.titleEN = cleanEN
         updated.isSample = false
-        store.updateItem(updated, originalCoverFileName: item.coverFileName)
+        store.updateItem(updated, originalCoverFileName: target.coverFileName)
     }
 
     private func applyCategoryChange(_ newCategory: MediaCategory) {
@@ -565,6 +586,188 @@ struct ItemDetailPanel: View {
         )
     }
 
+    private var timelineSection: some View {
+        let span = item.effectiveTimelineSpan()
+
+        return Button {
+            timelineEditingItemID = item.id
+            draftHasStartDate = item.startedAt != nil
+            draftStartDate = item.startedAt ?? item.finishedAt ?? Date()
+            draftHasFinishDate = item.finishedAt != nil
+            draftFinishDate = item.finishedAt ?? item.startedAt ?? Date()
+            showTimelinePopover = true
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "calendar")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(span != nil ? item.status.tintColor : .secondary)
+
+                Text(lang.tr("时间", "Dates"))
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 6)
+
+                if let span {
+                    let cal = TimelineLayoutModel.gregorianCalendar
+                    let sDay = cal.startOfDay(for: span.start)
+                    let eDay = cal.startOfDay(for: span.end)
+                    let days = max(1, (cal.dateComponents([.day], from: sDay, to: eDay).day ?? 0) + 1)
+
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(
+                            TimelineDateFormatter.spanText(
+                                start: sDay,
+                                end: eDay,
+                                isOngoing: span.isOngoing,
+                                durationDays: days,
+                                language: lang
+                            )
+                        )
+                        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                        Text(TimelineDateFormatter.durationText(days: days, isOngoing: span.isOngoing, language: lang))
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(lang.tr("设置起止日期…", "Set dates…"))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                Color.primary.opacity(isTimelineHovered ? 0.08 : 0.05),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(isTimelineHovered ? 0.14 : 0.08), lineWidth: 0.8)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { isTimelineHovered = $0 }
+        .help(lang.tr("点击设置开始与结束日期（用于时间线视图）", "Click to set start and finish dates for Timeline view"))
+        .popover(isPresented: $showTimelinePopover, arrowEdge: .leading) {
+            timelineEditorPopover
+        }
+    }
+
+    private var timelineEditorPopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(lang.tr("时间线日期", "Timeline Dates"))
+                    .font(.system(size: 13, weight: .bold))
+                Spacer()
+                if draftHasStartDate || draftHasFinishDate {
+                    Button(lang.tr("清除", "Clear")) {
+                        draftHasStartDate = false
+                        draftHasFinishDate = false
+                        if let targetID = timelineEditingItemID {
+                            store.updateTimelineDates(for: targetID, startedAt: nil, finishedAt: nil)
+                        }
+                    }
+                    .buttonStyle(ShelfButtonStyle(variant: .subtle, horizontalPadding: 7, verticalPadding: 3, cornerRadius: 5))
+                    .font(.system(size: 11))
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Toggle(lang.tr("开始日期", "Start Date"), isOn: $draftHasStartDate)
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 12, weight: .medium))
+                    Spacer()
+                    Button(lang.tr("今天", "Today")) {
+                        draftHasStartDate = true
+                        draftStartDate = Date()
+                    }
+                    .buttonStyle(ShelfButtonStyle(variant: .subtle, horizontalPadding: 6, verticalPadding: 2, cornerRadius: 5))
+                    .font(.system(size: 10.5))
+                }
+
+                if draftHasStartDate {
+                    DatePicker(
+                        "",
+                        selection: $draftStartDate,
+                        displayedComponents: .date
+                    )
+                    .labelsHidden()
+                    .datePickerStyle(.field)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Toggle(lang.tr("结束日期", "Finish Date"), isOn: $draftHasFinishDate)
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 12, weight: .medium))
+                    Spacer()
+                    Button(lang.tr("今天", "Today")) {
+                        draftHasFinishDate = true
+                        draftFinishDate = Date()
+                    }
+                    .buttonStyle(ShelfButtonStyle(variant: .subtle, horizontalPadding: 6, verticalPadding: 2, cornerRadius: 5))
+                    .font(.system(size: 10.5))
+                }
+
+                if draftHasFinishDate {
+                    DatePicker(
+                        "",
+                        selection: $draftFinishDate,
+                        displayedComponents: .date
+                    )
+                    .labelsHidden()
+                    .datePickerStyle(.field)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else if item.status == .active && draftHasStartDate {
+                    Text(lang.tr("留空时，进行中的作品会在时间线上持续延伸至今天。", "Leave empty so active items extend to today on the timeline."))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button(lang.tr("保存", "Save")) {
+                    commitTimelineDates()
+                    showTimelinePopover = false
+                }
+                .buttonStyle(
+                    ShelfButtonStyle(
+                        variant: .primary,
+                        horizontalPadding: 14,
+                        verticalPadding: 5,
+                        cornerRadius: 6
+                    )
+                )
+                .font(.system(size: 12, weight: .semibold))
+            }
+        }
+        .padding(14)
+        .frame(width: 256)
+        .onDisappear {
+            commitTimelineDates()
+        }
+    }
+
+    private func commitTimelineDates() {
+        guard let targetID = timelineEditingItemID else { return }
+        timelineEditingItemID = nil
+        let cal = TimelineLayoutModel.gregorianCalendar
+        let s = draftHasStartDate ? cal.startOfDay(for: draftStartDate) : nil
+        let f = draftHasFinishDate ? cal.startOfDay(for: draftFinishDate) : nil
+        store.updateTimelineDates(for: targetID, startedAt: s, finishedAt: f)
+    }
+
     private var notesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -579,32 +782,19 @@ struct ItemDetailPanel: View {
                 }
             }
 
-            ZStack(alignment: .topLeading) {
-                if draftNotes.isEmpty {
-                    Text(lang.tr("写点评价或备注…", "Write notes or thoughts…"))
-                        .font(.system(size: 13))
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 12)
-                        .allowsHitTesting(false)
-                }
-
-                TextEditor(text: $draftNotes)
-                    .font(.system(size: 13))
-                    .lineSpacing(4)
-                    .scrollContentBackground(.hidden)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 8)
-                    .frame(minHeight: 145)
-                    .onChange(of: draftNotes) { _, newValue in
-                        store.updateNotes(for: item.id, notes: newValue)
-                    }
-            }
-            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.8)
+            ShelfNotesEditor(
+                text: $draftNotes,
+                placeholder: lang.tr("写点评价或备注…", "Write notes or thoughts…"),
+                fontSize: 13,
+                lineSpacing: 4,
+                minHeight: 145,
+                fillOpacity: 0.05,
+                borderOpacity: 0.10,
+                cornerRadius: 10
             )
+            .onChange(of: draftNotes) { _, newValue in
+                store.updateNotes(for: item.id, notes: newValue)
+            }
         }
     }
 
@@ -636,7 +826,7 @@ struct ItemDetailPanel: View {
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(isDeleteHovered ? Color(red: 0.95, green: 0.34, blue: 0.34) : Color.secondary.opacity(0.75))
+                    .foregroundStyle(isDeleteHovered ? ShelfTheme.destructiveRed : Color.secondary.opacity(0.75))
                     .frame(width: 28, height: 28)
                     .background(
                         RoundedRectangle(cornerRadius: 7, style: .continuous)

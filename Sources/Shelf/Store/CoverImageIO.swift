@@ -46,13 +46,16 @@ enum CoverImageIO {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
+    private static let sRGBColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+
     static func resized(_ image: CGImage, maxPixel: Int) -> CGImage? {
+        guard image.width > 0, image.height > 0, maxPixel > 0 else { return nil }
         let scale = min(1, CGFloat(maxPixel) / CGFloat(max(image.width, image.height)))
         if scale == 1 { return image }
         let width = max(1, Int((CGFloat(image.width) * scale).rounded()))
         let height = max(1, Int((CGFloat(image.height) * scale).rounded()))
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
-                                      bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                      bytesPerRow: 0, space: sRGBColorSpace,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         context.interpolationQuality = .high
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
@@ -61,9 +64,10 @@ enum CoverImageIO {
 
     /// A tiny, filtered texture gives the detail header soft color without a live blur pass.
     static func previewBackdrop(_ image: CGImage) -> CGImage? {
+        guard image.width > 0, image.height > 0 else { return nil }
         let width = 12, height = 9
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
-                                      bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                      bytesPerRow: 0, space: sRGBColorSpace,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         let scale = max(CGFloat(width) / CGFloat(image.width), CGFloat(height) / CGFloat(image.height))
         let w = CGFloat(image.width) * scale, h = CGFloat(image.height) * scale
@@ -75,6 +79,7 @@ enum CoverImageIO {
     /// Core Animation can share this backing directly with the window server.
     static func displaySurface(_ image: CGImage) -> IOSurfaceRef? {
         let width = image.width, height = image.height
+        guard width > 0, height > 0 else { return nil }
         let stride = IOSurfaceAlignProperty(kIOSurfaceBytesPerRow, width * 4)
         let properties: [CFString: Any] = [
             kIOSurfaceWidth: width, kIOSurfaceHeight: height, kIOSurfaceBytesPerElement: 4,
@@ -85,7 +90,7 @@ enum CoverImageIO {
               IOSurfaceLock(surface, [], nil) == kIOReturnSuccess else { return nil }
         defer { IOSurfaceUnlock(surface, [], nil) }
         guard let context = CGContext(data: IOSurfaceGetBaseAddress(surface), width: width, height: height,
-                                      bitsPerComponent: 8, bytesPerRow: stride, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitsPerComponent: 8, bytesPerRow: stride, space: sRGBColorSpace,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
         else { return nil }
         switch image.alphaInfo {

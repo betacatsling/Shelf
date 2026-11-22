@@ -312,4 +312,22 @@ struct AppUpdaterTests {
         #expect(remainingTargetEntries == ["Shelf.app"])
         #expect(!FileManager.default.fileExists(atPath: workDir.path))
     }
+
+    @Test func testAppVersionPrereleaseStrictWeakOrdering() throws {
+        let a = try #require(AppVersion(parsing: "1.0.0-01"))
+        let b = try #require(AppVersion(parsing: "1.0.0-1"))
+        #expect(a == b)
+        #expect(!(a < b))
+        #expect(!(b < a))
+        #expect(Set([a, b]).count == 1)
+    }
+
+    @Test func testInstallerFilenameDoesNotFalseMatchUniversalArch() {
+        let intelInstaller = GitHubRelease.Asset(
+            name: "Shelf-Installer-x86_64.dmg",
+            browser_download_url: "https://github.com/betacatsling/Shelf/releases/download/v1.2.7/Shelf-Installer-x86_64.dmg"
+        )
+        #expect(AppUpdater.selectMacOSAsset(from: [intelInstaller], arch: "arm64") == nil)
+        #expect(AppUpdater.selectMacOSAsset(from: [intelInstaller], arch: "x86_64")?.name == intelInstaller.name)
+    }
 }

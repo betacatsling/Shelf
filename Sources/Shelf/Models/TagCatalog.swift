@@ -5,7 +5,7 @@ struct TagNode: Identifiable, Codable, Equatable, Hashable, Sendable {
     var category: String?
     var parent: String?
 
-    var id: String { name.lowercased() }
+    var id: String { MediaCategory.tagMatchKey(name) }
 
     init(name: String, category: String? = nil, parent: String? = nil) {
         let canonical = MediaCategory.canonicalTag(name)
@@ -77,7 +77,7 @@ struct TagCategorySection: Identifiable, Equatable {
     let category: String?
     let rows: [TagOutlineRow]
 
-    var id: String { category?.lowercased() ?? "__uncategorized__" }
+    var id: String { category.map(MediaCategory.tagMatchKey) ?? "__uncategorized__" }
 }
 
 enum TagCatalog {
@@ -93,7 +93,7 @@ enum TagCatalog {
         var map: [String: String] = [:]
         for group in starterCategoryGroups {
             for tag in group.tags {
-                map[MediaCategory.canonicalTag(tag).lowercased()] = group.category
+                map[MediaCategory.tagMatchKey(tag)] = group.category
             }
         }
         return map
@@ -110,16 +110,7 @@ enum TagCatalog {
     }()
 
     static func normalizeCategories(_ rawCategories: [String]) -> [String] {
-        var result: [String] = []
-        var seen: Set<String> = []
-        for raw in rawCategories {
-            let canonical = MediaCategory.canonicalTag(raw)
-            guard !canonical.isEmpty else { continue }
-            let key = canonical.lowercased()
-            guard seen.insert(key).inserted else { continue }
-            result.append(canonical)
-        }
-        return result
+        MediaCategory.normalizeTags(rawCategories)
     }
 
     static func migrateLegacyTags(_ flatTags: [String]) -> (categories: [String], nodes: [TagNode]) {
@@ -127,12 +118,12 @@ enum TagCatalog {
         var seenCategories: Set<String> = []
         var nodes: [TagNode] = []
         var seenTags: Set<String> = []
-        let starterGroupIDs = Set(defaultStarterCategories.map { $0.lowercased() })
+        let starterGroupIDs = Set(defaultStarterCategories.map(MediaCategory.tagMatchKey))
 
         for raw in flatTags {
             let canonical = MediaCategory.canonicalTag(raw)
             guard !canonical.isEmpty else { continue }
-            let key = canonical.lowercased()
+            let key = MediaCategory.tagMatchKey(canonical)
             if starterGroupIDs.contains(key) {
                 if seenCategories.insert(key).inserted {
                     categories.append(canonical)
@@ -142,7 +133,7 @@ enum TagCatalog {
             guard seenTags.insert(key).inserted else { continue }
 
             if let cat = starterCategoryByTag[key] {
-                if seenCategories.insert(cat.lowercased()).inserted {
+                if seenCategories.insert(MediaCategory.tagMatchKey(cat)).inserted {
                     categories.append(cat)
                 }
                 nodes.append(TagNode(name: canonical, category: cat, parent: nil))
@@ -160,7 +151,7 @@ enum TagCatalog {
         }
 
         let starterGroupMap = Dictionary(
-            uniqueKeysWithValues: defaultStarterCategories.map { ($0.lowercased(), $0) }
+            uniqueKeysWithValues: defaultStarterCategories.map { (MediaCategory.tagMatchKey($0), $0) }
         )
         var promotedCategoryByID: [String: String] = [:]
         var categories = payload.categories
@@ -181,7 +172,7 @@ enum TagCatalog {
             if promotedCategoryByID[node.id] != nil {
                 continue
             }
-            if let parent = node.parent, let promotedCat = promotedCategoryByID[parent.lowercased()] {
+            if let parent = node.parent, let promotedCat = promotedCategoryByID[MediaCategory.tagMatchKey(parent)] {
                 node.parent = nil
                 node.category = promotedCat
             }
@@ -198,7 +189,7 @@ enum TagCatalog {
     ) -> (categories: [String], nodes: [TagNode]) {
         let normalizedCategories = normalizeCategories(rawCategories)
         let categoryByID = Dictionary(
-            uniqueKeysWithValues: normalizedCategories.map { ($0.lowercased(), $0) }
+            uniqueKeysWithValues: normalizedCategories.map { (MediaCategory.tagMatchKey($0), $0) }
         )
 
         var result: [TagNode] = []
@@ -207,9 +198,9 @@ enum TagCatalog {
         for node in nodes {
             let canonical = MediaCategory.canonicalTag(node.name)
             guard !canonical.isEmpty else { continue }
-            let key = canonical.lowercased()
+            let key = MediaCategory.tagMatchKey(canonical)
             guard seen.insert(key).inserted else { continue }
-            let cleanCat = node.category.flatMap { categoryByID[MediaCategory.canonicalTag($0).lowercased()] }
+            let cleanCat = node.category.flatMap { categoryByID[MediaCategory.tagMatchKey($0)] }
             let cleanParent = node.parent.map(MediaCategory.canonicalTag)
             result.append(TagNode(name: canonical, category: cleanCat, parent: cleanParent))
         }
@@ -218,10 +209,10 @@ enum TagCatalog {
         for raw in itemTags where seenItemTags.insert(raw).inserted {
             let canonical = MediaCategory.canonicalTag(raw)
             guard !canonical.isEmpty else { continue }
-            let key = canonical.lowercased()
+            let key = MediaCategory.tagMatchKey(canonical)
             guard seen.insert(key).inserted else { continue }
             if let starterCat = starterCategoryByTag[key],
-               let validCat = categoryByID[starterCat.lowercased()] {
+               let validCat = categoryByID[MediaCategory.tagMatchKey(starterCat)] {
                 result.append(TagNode(name: canonical, category: validCat, parent: nil))
             } else {
                 result.append(TagNode(name: canonical, category: nil, parent: nil))
@@ -235,7 +226,7 @@ enum TagCatalog {
 
         for idx in result.indices {
             guard let parent = result[idx].parent else { continue }
-            let parentID = parent.lowercased()
+            let parentID = MediaCategory.tagMatchKey(parent)
             if parentID == result[idx].id || canonicalNameByID[parentID] == nil {
                 result[idx].parent = nil
             } else {
@@ -252,7 +243,7 @@ enum TagCatalog {
             var visited: Set<String> = [result[idx].id]
             var currentParent = result[idx].parent
             while let parentName = currentParent {
-                let parentID = parentName.lowercased()
+                let parentID = MediaCategory.tagMatchKey(parentName)
                 if !visited.insert(parentID).inserted {
                     result[idx].parent = nil
                     break
@@ -266,7 +257,7 @@ enum TagCatalog {
             var cursor = result[idx]
             var visited: Set<String> = [cursor.id]
             while let parentName = cursor.parent,
-                  let parentIdx = indexByID[parentName.lowercased()],
+                  let parentIdx = indexByID[MediaCategory.tagMatchKey(parentName)],
                   visited.insert(result[parentIdx].id).inserted {
                 cursor = result[parentIdx]
             }
@@ -280,9 +271,9 @@ enum TagCatalog {
         guard let parentName else {
             return nodes.filter { $0.parent == nil }
         }
-        let targetID = MediaCategory.canonicalTag(parentName).lowercased()
+        let targetID = MediaCategory.tagMatchKey(parentName)
         guard !targetID.isEmpty else { return [] }
-        return nodes.filter { $0.parent?.lowercased() == targetID }
+        return nodes.filter { $0.parent.map(MediaCategory.tagMatchKey) == targetID }
     }
 
     struct Tree {
@@ -290,13 +281,13 @@ enum TagCatalog {
         private let firstNameByKey: [String: String]
 
         init(_ nodes: [TagNode]) {
-            childrenByParent = Dictionary(grouping: nodes) { $0.parent?.lowercased() }
-            firstNameByKey = Dictionary(nodes.map { (MediaCategory.tagMatchKey($0.name), $0.name) },
+            childrenByParent = Dictionary(grouping: nodes) { $0.parent.map(MediaCategory.tagMatchKey) }
+            firstNameByKey = Dictionary(nodes.map { ($0.id, $0.name) },
                                         uniquingKeysWith: { first, _ in first })
         }
 
         func descendants(of tagName: String) -> [String] {
-            let rootID = MediaCategory.canonicalTag(tagName).lowercased()
+            let rootID = MediaCategory.tagMatchKey(tagName)
             guard !rootID.isEmpty else { return [] }
             var visited: Set<String> = [rootID]
             var result: [String] = []
@@ -353,13 +344,13 @@ enum TagCatalog {
         for node in nodes {
             lookup[node.id] = node
         }
-        let targetID = MediaCategory.canonicalTag(tagName).lowercased()
+        let targetID = MediaCategory.tagMatchKey(tagName)
         guard var current = lookup[targetID] else { return [] }
 
         var chain: [String] = []
         var visited: Set<String> = [current.id]
         while let parentName = current.parent,
-              let parentNode = lookup[parentName.lowercased()],
+              let parentNode = lookup[MediaCategory.tagMatchKey(parentName)],
               visited.insert(parentNode.id).inserted {
             chain.append(parentNode.name)
             current = parentNode
@@ -398,14 +389,14 @@ enum TagCatalog {
         includeEmptyCategories: Bool = false
     ) -> [TagCategorySection] {
         var sections: [TagCategorySection] = []
-        let categoryIDs = Set(categories.map { $0.lowercased() })
+        let categoryIDs = Set(categories.map(MediaCategory.tagMatchKey))
         let nodesByCategory = Dictionary(grouping: nodes) { node -> String? in
-            guard let key = node.category?.lowercased(), categoryIDs.contains(key) else { return nil }
+            guard let key = node.category.map(MediaCategory.tagMatchKey), categoryIDs.contains(key) else { return nil }
             return key
         }
 
         for category in categories {
-            let key = category.lowercased()
+            let key = MediaCategory.tagMatchKey(category)
             let catNodes = nodesByCategory[key] ?? []
             let rows = flattenedOutline(in: catNodes, collapsedIDs: collapsedTagIDs)
             if !rows.isEmpty || includeEmptyCategories {
@@ -423,7 +414,7 @@ enum TagCatalog {
     }
 
     static func searchRows(matching rawQuery: String, in nodes: [TagNode]) -> [TagOutlineRow] {
-        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = rawQuery.trimmed
         let outline = flattenedOutline(in: nodes)
         guard !query.isEmpty else { return outline }
 
@@ -465,11 +456,5 @@ enum TagCatalog {
         ancestors
             .map { MediaCategory.localizedTag($0, in: language) }
             .joined(separator: " › ")
-    }
-}
-
-extension String {
-    func hasCaseInsensitivePrefix(_ prefix: String) -> Bool {
-        range(of: prefix, options: [.caseInsensitive, .diacriticInsensitive, .anchored]) != nil
     }
 }

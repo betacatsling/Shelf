@@ -32,46 +32,34 @@ struct QuickFindOverlay: View {
         let entries: [Entry]
     }
 
-    private var trimmedQuery: String {
-        query.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    private static let untaggedKeywords = ["无标签", "未标记", "no tag", "untagged"]
+
+    private var trimmedQuery: String { query.trimmed }
 
     private func sections(items: [MediaItem]) -> [SectionGroup] {
         var groups: [SectionGroup] = []
 
         if trimmedQuery.isEmpty {
             var tagEntries: [Entry] = []
-            let untaggedTotal = store.totalUntaggedCount
-            if library.untaggedCount > 0 || untaggedTotal > 0 || store.filterUntaggedOnly {
+            if library.untaggedCount > 0 || store.totalUntaggedCount > 0 || store.filterUntaggedOnly {
                 tagEntries.append(Entry(id: "untagged", kind: .untagged))
             }
             for row in TagCatalog.flattenedOutline(in: store.tagNodes) {
                 tagEntries.append(Entry(id: "tag:\(row.id)", kind: .tag(row)))
             }
             if !tagEntries.isEmpty {
-                groups.append(
-                    SectionGroup(
-                        id: "tags",
-                        title: language.tr("按标签筛选", "Filter by Tag"),
-                        entries: tagEntries
-                    )
-                )
+                groups.append(SectionGroup(id: "tags", title: language.tr("按标签筛选", "Filter by Tag"), entries: tagEntries))
             }
-
-            groups.append(
-                SectionGroup(
-                    id: "management",
-                    title: language.tr("标签管理", "Management"),
-                    entries: [Entry(id: "manage-tags", kind: .manageTags)]
-                )
-            )
+            groups.append(SectionGroup(
+                id: "management",
+                title: language.tr("标签管理", "Management"),
+                entries: [Entry(id: "manage-tags", kind: .manageTags)]
+            ))
             return groups
         }
 
-        // Non-empty query: Tags, Lists, Items
         var matchedTagEntries: [Entry] = []
-        let untaggedKeywords = ["无标签", "未标记", "no tag", "untagged"]
-        if untaggedKeywords.contains(where: {
+        if Self.untaggedKeywords.contains(where: {
             $0.localizedCaseInsensitiveContains(trimmedQuery) || trimmedQuery.localizedCaseInsensitiveContains($0)
         }) {
             matchedTagEntries.append(Entry(id: "untagged", kind: .untagged))
@@ -80,46 +68,26 @@ struct QuickFindOverlay: View {
             matchedTagEntries.append(Entry(id: "tag:\(row.id)", kind: .tag(row)))
         }
         if !matchedTagEntries.isEmpty {
-            groups.append(
-                SectionGroup(
-                    id: "tags",
-                    title: language.tr("标签", "Tags"),
-                    entries: matchedTagEntries
-                )
-            )
+            groups.append(SectionGroup(id: "tags", title: language.tr("标签", "Tags"), entries: matchedTagEntries))
         }
 
-        let allDestinations: [SidebarDestination] = [
-            .all, .category(.game), .category(.novel), .category(.video), .fiveStar
-        ]
-        let matchedDestinations = allDestinations.filter { dest in
+        let matchedDestinations = SidebarDestination.allDestinations.filter { dest in
             dest.title(in: .zh).localizedCaseInsensitiveContains(trimmedQuery)
                 || dest.title(in: .en).localizedCaseInsensitiveContains(trimmedQuery)
         }
         if !matchedDestinations.isEmpty {
-            groups.append(
-                SectionGroup(
-                    id: "lists",
-                    title: language.tr("分类列表", "Lists"),
-                    entries: matchedDestinations.map { Entry(id: "dest:\($0.hashValue)", kind: .destination($0)) }
-                )
-            )
+            groups.append(SectionGroup(
+                id: "lists",
+                title: language.tr("分类列表", "Lists"),
+                entries: matchedDestinations.map { Entry(id: "dest:\($0.stableID)", kind: .destination($0)) }
+            ))
         }
 
-        var itemEntries: [Entry] = [
-            Entry(id: "search-all", kind: .searchAllItems(trimmedQuery))
-        ]
+        var itemEntries: [Entry] = [Entry(id: "search-all", kind: .searchAllItems(trimmedQuery))]
         for item in items {
             itemEntries.append(Entry(id: "item:\(item.id.uuidString)", kind: .item(item)))
         }
-        groups.append(
-            SectionGroup(
-                id: "items",
-                title: language.tr("作品", "Items"),
-                entries: itemEntries
-            )
-        )
-
+        groups.append(SectionGroup(id: "items", title: language.tr("作品", "Items"), entries: itemEntries))
         return groups
     }
 
@@ -136,62 +104,38 @@ struct QuickFindOverlay: View {
         let safeIndex = flatEntries.isEmpty ? 0 : min(max(highlightedIndex, 0), flatEntries.count - 1)
         let indexByID = Dictionary(uniqueKeysWithValues: flatEntries.enumerated().map { ($0.element.id, $0.offset) })
 
-        ZStack(alignment: .top) {
-            Color.black.opacity(0.22)
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture(perform: onDismiss)
-
+        ModalOverlayContainer(width: 480, topPadding: 56, cornerRadius: 14, backdropOpacity: 0.22, onDismiss: onDismiss) {
             VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(.secondary)
-
-                    SearchCommandTextField(
-                        placeholder: language.tr("快速切换分类、查找作品或搜索标签…", "Quickly switch lists, find items, or search tags…"),
-                        text: $query,
-                        autoFocus: true,
-                        font: .systemFont(ofSize: 15),
-                        onMoveUp: {
-                            guard !flatEntries.isEmpty else { return }
-                            highlightedIndex = (safeIndex - 1 + flatEntries.count) % flatEntries.count
-                        },
-                        onMoveDown: {
-                            guard !flatEntries.isEmpty else { return }
-                            highlightedIndex = (safeIndex + 1) % flatEntries.count
-                        },
-                        onSubmit: { flags in
-                            guard flatEntries.indices.contains(safeIndex) else {
-                                onDismiss()
-                                return
-                            }
-                            activateEntry(flatEntries[safeIndex], modifiers: flags)
-                        },
-                        onEscape: onDismiss
-                    )
-                    .frame(height: 24)
-
-                    if !query.isEmpty {
-                        Button {
-                            query = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 13))
-                                .foregroundStyle(.tertiary)
+                ShelfSearchBar(
+                    placeholder: language.tr("快速切换分类、查找作品或搜索标签…", "Quickly switch lists, find items, or search tags…"),
+                    text: $query,
+                    autoFocus: true,
+                    font: .systemFont(ofSize: 15),
+                    iconSize: 15,
+                    spacing: 10,
+                    fieldHeight: 24,
+                    horizontalPadding: 14,
+                    verticalPadding: 12,
+                    showsChrome: false,
+                    onMoveUp: {
+                        guard !flatEntries.isEmpty else { return }
+                        highlightedIndex = (safeIndex - 1 + flatEntries.count) % flatEntries.count
+                    },
+                    onMoveDown: {
+                        guard !flatEntries.isEmpty else { return }
+                        highlightedIndex = (safeIndex + 1) % flatEntries.count
+                    },
+                    onSubmit: { flags in
+                        guard flatEntries.indices.contains(safeIndex) else {
+                            onDismiss()
+                            return
                         }
-                        .buttonStyle(.plain)
-                    }
-
-                    Text("Esc")
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5.5)
-                        .padding(.vertical, 2)
-                        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
+                        activateEntry(flatEntries[safeIndex], modifiers: flags)
+                    },
+                    onEscape: onDismiss,
+                    trailingHint: "Esc",
+                    alwaysShowTrailingHint: true
+                )
 
                 Divider()
 
@@ -229,6 +173,11 @@ struct QuickFindOverlay: View {
                         .onChange(of: query) { _, _ in
                             highlightedIndex = 0
                         }
+                        .onChange(of: flatEntries.count) { _, newCount in
+                            if highlightedIndex >= newCount {
+                                highlightedIndex = max(0, newCount - 1)
+                            }
+                        }
                         .onChange(of: highlightedIndex) { _, newIdx in
                             guard flatEntries.indices.contains(newIdx) else { return }
                             proxy.scrollTo(flatEntries[newIdx].id)
@@ -254,14 +203,7 @@ struct QuickFindOverlay: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)
             }
-            .frame(width: 480)
-            .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.9)
-            )
-            .shadow(color: .black.opacity(0.30), radius: 26, x: 0, y: 12)
-            .padding(.top, 56)
+            .background(Color(nsColor: .windowBackgroundColor))
         }
         .task(id: request) {
             guard let request else {
@@ -343,8 +285,7 @@ struct QuickFindOverlay: View {
                 : store.usageCount(forTag: row.node.name, in: .all, includeDescendants: true)
             HStack(spacing: 8) {
                 if trimmedQuery.isEmpty && row.depth > 0 {
-                    Spacer()
-                        .frame(width: CGFloat(row.depth) * 14)
+                    Spacer().frame(width: CGFloat(row.depth) * 14)
                 }
 
                 Image(systemName: row.hasChildren ? "tag.fill" : "tag")
@@ -400,11 +341,10 @@ struct QuickFindOverlay: View {
             }
 
         case .destination(let dest):
-            let meta = destinationAppearance(dest)
             HStack(spacing: 8) {
-                Image(systemName: meta.icon)
+                Image(systemName: dest.systemImage)
                     .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(meta.tint)
+                    .foregroundStyle(dest.tintColor)
                     .frame(width: 16)
 
                 Text(dest.title(in: language))
@@ -472,17 +412,6 @@ struct QuickFindOverlay: View {
         }
     }
 
-    private func destinationAppearance(_ dest: SidebarDestination) -> (icon: String, tint: Color) {
-        switch dest {
-        case .all:
-            return ("square.grid.2x2.fill", .accentColor)
-        case .category(let cat):
-            return (cat.systemImage, cat.accentColor)
-        case .fiveStar:
-            return ("star.fill", Color(red: 0.96, green: 0.72, blue: 0.18))
-        }
-    }
-
     private func activateEntry(_ entry: Entry, modifiers: NSEvent.ModifierFlags) {
         switch entry.kind {
         case .untagged:
@@ -506,20 +435,11 @@ struct QuickFindOverlay: View {
             onDismiss()
 
         case .searchAllItems(let q):
-            store.searchText = q
+            store.searchAllItems(q)
             onDismiss()
 
         case .item(let item):
-            if !store.selectedDestination.includes(item) {
-                store.selectDestination(.all)
-            }
-            if case .single(let activeStatus) = store.statusFilter, activeStatus != item.status {
-                store.statusFilter = .allShelves
-            }
-            if store.hasActiveFilter {
-                store.clearSearch()
-            }
-            store.selectedItemID = item.id
+            store.revealItem(item)
             onDismiss()
         }
     }

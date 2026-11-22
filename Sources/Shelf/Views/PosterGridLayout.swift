@@ -28,7 +28,7 @@ final class PosterGridLayout {
     private var cellHeight: CGFloat = 0
     private var columnStep: CGFloat = 0
     private(set) var rowStep: CGFloat = 0
-    private let padding: CGFloat = 24
+    private let padding: CGFloat = ShelfTheme.horizontalPadding
 
     @discardableResult
     func update(sections: [ShelfSectionModel], scale: Double, width: CGFloat,
@@ -55,7 +55,7 @@ final class PosterGridLayout {
         let available = max(minWidth, max(240, width) - padding * 2)
         cardWidth = min(available, fullColumns == 1 ? maxWidth : maxWidth + 24, fittedWidth)
         columns = max(1, Int((available + spacing) / (cardWidth + spacing)))
-        cellHeight = round(cardWidth * 1.5) + 40
+        cellHeight = round(cardWidth * ShelfTheme.posterAspectRatio) + 40
         columnStep = cardWidth + spacing
         rowStep = cellHeight + rowSpacing
 
@@ -98,7 +98,7 @@ final class PosterGridLayout {
     }
 
     func itemPath(at point: CGPoint) -> IndexPath? {
-        guard point.x >= padding, columnStep > 0 else { return nil }
+        guard point.x >= padding, columnStep > 0, rowStep > 0 else { return nil }
         let column = Int((point.x - padding) / columnStep)
         guard column < columns else { return nil }
         for (index, section) in geometry.enumerated() where section.rows > 0 && point.y >= section.firstRowY {
@@ -113,6 +113,7 @@ final class PosterGridLayout {
     }
 
     func visitItems(in rect: CGRect, _ visit: (IndexPath, CGRect) -> Void) {
+        guard columnStep > 0, rowStep > 0 else { return }
         for (index, section) in geometry.enumerated() {
             guard let rows = visibleRows(in: section, rect: rect) else { continue }
             let startColumn = max(0, Int(floor((rect.minX - padding) / columnStep)))
@@ -155,7 +156,7 @@ final class PosterGridLayout {
     }
 
     private func visibleRows(in section: Geometry, rect: CGRect) -> ClosedRange<Int>? {
-        guard section.rows > 0, rect.maxY > section.firstRowY,
+        guard rowStep > 0, section.rows > 0, rect.maxY > section.firstRowY,
               rect.minY < section.firstRowY + CGFloat(section.rows - 1) * rowStep + cellHeight else { return nil }
         let first = max(0, Int(floor((rect.minY - section.firstRowY) / rowStep)))
         let last = min(section.rows - 1, Int(floor((rect.maxY - section.firstRowY) / rowStep)))

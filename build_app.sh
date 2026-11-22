@@ -24,12 +24,7 @@ swiftc -sdk "$SDK_PATH" -target arm64-apple-macos14.0 "$PROJECT_DIR/scripts/gene
 iconutil -c icns "$ICONSET_DIR" -o "$BUILD_TMP/AppIcon.icns"
 
 echo "==> Compiling Shelf native macOS binary (Release -O)..."
-SOURCES=(
-    "$PROJECT_DIR"/Sources/Shelf/*.swift
-    "$PROJECT_DIR"/Sources/Shelf/Models/*.swift
-    "$PROJECT_DIR"/Sources/Shelf/Store/*.swift
-    "$PROJECT_DIR"/Sources/Shelf/Views/*.swift
-)
+SOURCES=("${(@f)$(find "$PROJECT_DIR/Sources/Shelf" -name '*.swift' | sort)}")
 
 swiftc \
     -sdk "$SDK_PATH" \
@@ -75,9 +70,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.2.6</string>
+    <string>1.3.0</string>
     <key>CFBundleVersion</key>
-    <string>10</string>
+    <string>11</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>

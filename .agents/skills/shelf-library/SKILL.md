@@ -48,8 +48,9 @@ Shelf 支持一键切换 `中文 / English`，**严禁机翻或生造民间译�
   - 填写该作品的**官方英文发行名称**（如 `诡秘之主` → `Lord of Mysteries`，`道诡异仙` → `Dao of the Bizarre Immortal`，`影之刃零` → `Phantom Blade Zero`）。
   - 若该作品**没有官方英文译名**（如《无尽债务》《诡秘地海》），**必须传空字符串 `""`**（客户端在英文模式下会自动回退显示 `title` 原名）。
 
-### 4. 评分与备注（`rating` 与 `notes`）
+### 4. 评分、时间线日期与备注（`rating`、`startedAt`/`finishedAt` 与 `notes`）
 - **`rating`**：`0`–`5` 整数。用户未明确给出星级时**一律保持 `0`（未评分）**，不要擅自打分。
+- **`startedAt` / `finishedAt`（可选）**：时间线起止日期，可通过 `upsert` 的 `--started-at YYYY-MM-DD` 与 `--finished-at YYYY-MM-DD`（传 `clear` 可清除）设置；若用户提到具体的开玩/通关/起止日期可顺便写入，未提及时留空。
 - **`notes`**：
   - 用户口述了评价或分数（如 `总分 92`）则如实记录。
   - 用户未提评价时：`game` / `video` 保持空字符串 `""`；`novel`（文字类）如果新建且无备注，可简短注明作者（如 `Andlao 著`、`狐尾的笔 著`）。**严禁替用户编造主观长篇评价**。

@@ -152,6 +152,21 @@ def set_item_tags(item: dict, tags: list[str]):
     item["subtag"] = normalized[0] if normalized else ""
 
 
+def parse_timeline_date(raw: str | None) -> tuple[bool, str | None]:
+    if raw is None:
+        return (False, None)
+    cleaned = raw.strip()
+    if not cleaned or cleaned.lower() in ("clear", "none", "null"):
+        return (True, None)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", cleaned):
+        datetime.strptime(cleaned, "%Y-%m-%d")
+        return (True, f"{cleaned}T12:00:00Z")
+    dt = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (True, dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+
 def is_shelf_running() -> bool:
     res = subprocess.run(["pgrep", "-x", "Shelf"], capture_output=True)
     return res.returncode == 0
@@ -625,10 +640,16 @@ def cmd_list(args):
     for x in matched[: args.limit]:
         has_cover = "yes" if x.get("coverFileName") else "NO"
         tags_str = ", ".join(get_item_tags(x))
+        dates_bits = []
+        if x.get("startedAt"):
+            dates_bits.append(f"start={x['startedAt'][:10]}")
+        if x.get("finishedAt"):
+            dates_bits.append(f"end={x['finishedAt'][:10]}")
+        dates_str = f" | {' '.join(dates_bits)}" if dates_bits else ""
         print(
             f"- id={x['id']} | {x['category']} | {x['status']} | "
             f"ZH={x.get('title','')} | EN={x.get('titleEN','')} | "
-            f"tags=[{tags_str}] | rating={x.get('rating',0)} | cover={has_cover}"
+            f"tags=[{tags_str}] | rating={x.get('rating',0)} | cover={has_cover}{dates_str}"
         )
 
 
@@ -801,6 +822,9 @@ def write_upsert(args):
         to_remove = split_tag_values(args.remove_tag)
         next_tags = [t for t in next_tags if not any(tags_match(t, r) for r in to_remove)]
 
+    set_started, parsed_started = parse_timeline_date(getattr(args, "started_at", None))
+    set_finished, parsed_finished = parse_timeline_date(getattr(args, "finished_at", None))
+
     if target is not None:
         action = "UPDATED"
         target["title"] = title_zh
@@ -816,6 +840,16 @@ def write_upsert(args):
         if new_cover_name:
             old_cover = target.get("coverFileName")
             target["coverFileName"] = new_cover_name
+        if set_started:
+            if parsed_started is None:
+                target.pop("startedAt", None)
+            else:
+                target["startedAt"] = parsed_started
+        if set_finished:
+            if parsed_finished is None:
+                target.pop("finishedAt", None)
+            else:
+                target["finishedAt"] = parsed_finished
         target["updatedAt"] = now_iso
         target["isSample"] = False
         entry = target
@@ -835,12 +869,16 @@ def write_upsert(args):
             "updatedAt": now_iso,
             "isSample": False,
         }
+        if set_started and parsed_started is not None:
+            entry["startedAt"] = parsed_started
+        if set_finished and parsed_finished is not None:
+            entry["finishedAt"] = parsed_finished
         set_item_tags(entry, next_tags)
         items.insert(0, entry)
 
     save_items(items)
-    nodes = load_tag_nodes(items)
-    save_tag_nodes(nodes)
+    categories, nodes = load_tag_catalog(items)
+    save_tag_catalog(categories, nodes)
 
     if (old_cover and old_cover == os.path.basename(old_cover) and old_cover not in (".", "..")
             and not any(item.get("coverFileName") == old_cover for item in items)):
@@ -1151,6 +1189,8 @@ def main():
     p_up.add_argument("--subtag", default=None, help="Legacy single-tag option (prefer --tags)")
     p_up.add_argument("--rating", type=int, default=None, help="0 (unrated) to 5")
     p_up.add_argument("--notes", default=None, help="User notes or author credit")
+    p_up.add_argument("--started-at", default=None, help="Optional start date (YYYY-MM-DD, ISO-8601, or 'clear')")
+    p_up.add_argument("--finished-at", default=None, help="Optional finish date (YYYY-MM-DD, ISO-8601, or 'clear')")
     p_up.add_argument("--cover-url", default=None, help="Remote image URL to download as 2:3 cover")
     p_up.add_argument("--cover-file", default=None, help="Local image file path to copy as cover")
     p_up.add_argument("--open", action="store_true", help="Open Shelf after saving even if it was closed")

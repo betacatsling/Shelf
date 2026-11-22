@@ -6,6 +6,7 @@ final class LibraryFile: Sendable {
         let items: [MediaItem]?
         let tagCategories: [String]?
         let tagNodes: [TagNode]?
+        let tagCatalogCorrupted: Bool
     }
 
     let url: URL
@@ -26,28 +27,55 @@ final class LibraryFile: Sendable {
                     } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
                         items = nil
                     }
-                    let catalog = try? Self.readTagCatalog(from: tagsURL)
-                    return Snapshot(items: items, tagCategories: catalog?.categories, tagNodes: catalog?.nodes)
+                    let catalog: (categories: [String], nodes: [TagNode])?
+                    let tagCatalogCorrupted: Bool
+                    do {
+                        catalog = try Self.readTagCatalog(from: tagsURL)
+                        tagCatalogCorrupted = false
+                    } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                        catalog = nil
+                        tagCatalogCorrupted = false
+                    } catch {
+                        print("Failed to read tags.json: \(error)")
+                        catalog = nil
+                        tagCatalogCorrupted = true
+                    }
+                    return Snapshot(
+                        items: items,
+                        tagCategories: catalog?.categories,
+                        tagNodes: catalog?.nodes,
+                        tagCatalogCorrupted: tagCatalogCorrupted
+                    )
                 })
             }
         }
     }
 
-    func save(_ items: [MediaItem], tagCategories: [String], tagNodes: [TagNode], completion: @escaping @MainActor @Sendable (Result<Void, Error>) -> Void) {
+    func save(
+        _ items: [MediaItem],
+        tagCategories: [String],
+        tagNodes: [TagNode],
+        writeTags: Bool = true,
+        completion: @escaping @MainActor @Sendable (Result<Void, Error>) -> Void
+    ) {
         queue.async { [url, tagsURL] in
             let result = Result {
                 try Self.write(items, to: url)
-                try Self.writeTagCatalog(categories: tagCategories, nodes: tagNodes, to: tagsURL)
+                if writeTags {
+                    try Self.writeTagCatalog(categories: tagCategories, nodes: tagNodes, to: tagsURL)
+                }
             }
             Task { @MainActor in completion(result) }
         }
     }
 
     /// A synchronous barrier for normal app termination, including any write already in progress.
-    func flush(_ items: [MediaItem], tagCategories: [String], tagNodes: [TagNode]) throws {
+    func flush(_ items: [MediaItem], tagCategories: [String], tagNodes: [TagNode], writeTags: Bool = true) throws {
         try queue.sync {
             try Self.write(items, to: url)
-            try Self.writeTagCatalog(categories: tagCategories, nodes: tagNodes, to: tagsURL)
+            if writeTags {
+                try Self.writeTagCatalog(categories: tagCategories, nodes: tagNodes, to: tagsURL)
+            }
         }
     }
 
@@ -58,12 +86,11 @@ final class LibraryFile: Sendable {
     }
 
     static func write(_ items: [MediaItem], to url: URL, formatted: Bool = false) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         if formatted {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        } else {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         }
         try encoder.encode(items).write(to: url, options: .atomic)
     }

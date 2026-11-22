@@ -16,32 +16,54 @@ struct StarRatingView: View {
     var body: some View {
         HStack(spacing: spacing) {
             ForEach(1...5, id: \.self) { index in
-                Image(systemName: index <= effectiveRating ? "star.fill" : "star")
-                    .font(.system(size: starSize, weight: .medium))
-                    .foregroundStyle(
-                        index <= effectiveRating
-                            ? Color(red: 0.98, green: 0.76, blue: 0.20)
-                            : Color.secondary.opacity(0.38)
-                    )
-                    .scaleEffect(!reduceMotion && interactive && hoveredStar == index ? 1.12 : 1.0)
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hoveredStar == index)
-                    .contentShape(Rectangle())
-                    .onHover { inside in
-                        guard interactive else { return }
-                        if inside {
-                            hoveredStar = index
-                        } else if hoveredStar == index {
-                            hoveredStar = nil
-                        }
-                    }
-                    .onTapGesture {
-                        guard interactive else { return }
-                        rating = (rating == index) ? 0 : index
-                    }
+                starIcon(for: index)
             }
         }
         .onHover { inside in
             if !inside { hoveredStar = nil }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityValue("\(rating) / 5")
+        .accessibilityAdjustableAction { direction in
+            guard interactive else { return }
+            switch direction {
+            case .increment:
+                rating = min(5, rating + 1)
+            case .decrement:
+                rating = max(0, rating - 1)
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func starIcon(for index: Int) -> some View {
+        let icon = Image(systemName: index <= effectiveRating ? "star.fill" : "star")
+            .font(.system(size: starSize, weight: .medium))
+            .foregroundStyle(
+                index <= effectiveRating
+                    ? ShelfTheme.starGold
+                    : Color.secondary.opacity(0.38)
+            )
+            .scaleEffect(!reduceMotion && interactive && hoveredStar == index ? 1.12 : 1.0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hoveredStar == index)
+
+        if interactive {
+            icon
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    if inside {
+                        hoveredStar = index
+                    } else if hoveredStar == index {
+                        hoveredStar = nil
+                    }
+                }
+                .onTapGesture {
+                    rating = (rating == index) ? 0 : index
+                }
+        } else {
+            icon
         }
     }
 }

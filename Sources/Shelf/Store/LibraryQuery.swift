@@ -4,22 +4,44 @@ import Foundation
 struct LibraryPoster: Equatable, Sendable {
     let id: UUID
     let title: String
+    let secondaryTitle: String?
     let category: MediaCategory
     let status: TrackingStatus
     let subtag: String
     let rating: Int
     let coverFileName: String?
     let paletteSeed: Int
+    let startedAt: Date?
+    let finishedAt: Date?
 
     init(_ item: MediaItem, language: AppLanguage) {
         id = item.id
         title = item.displayTitle(in: language)
+        secondaryTitle = item.secondaryTitle(in: language)
         category = item.category
         status = item.status
         subtag = item.subtag
         rating = item.rating
         coverFileName = item.coverFileName
         paletteSeed = item.paletteSeed
+        startedAt = item.startedAt
+        finishedAt = item.finishedAt
+    }
+
+    func effectiveTimelineSpan(now: Date = Date()) -> (start: Date, end: Date, isOngoing: Bool)? {
+        switch (startedAt, finishedAt) {
+        case (.some(let s), .some(let f)):
+            return (min(s, f), max(s, f), false)
+        case (.some(let s), nil):
+            if status == .active {
+                return (s, max(s, now), true)
+            }
+            return (s, s, false)
+        case (nil, .some(let f)):
+            return (f, f, false)
+        case (nil, nil):
+            return nil
+        }
     }
 }
 
@@ -144,6 +166,7 @@ struct LibraryQuery {
         let language: AppLanguage
         let revision: UInt64
         let notesRevision: UInt64
+        var limit: Int = 6
     }
 
     actor Worker {
@@ -156,7 +179,7 @@ struct LibraryQuery {
 
         func quickFind(_ records: [MediaItem], request: QuickFindRequest) -> [MediaItem]? {
             guard !Task.isCancelled else { return nil }
-            return LibraryQuery.quickFind(records, text: request.text, language: request.language, limit: 6)
+            return LibraryQuery.quickFind(records, text: request.text, language: request.language, limit: request.limit)
         }
     }
 
@@ -344,14 +367,16 @@ struct LibraryQuery {
     }
 
     static func quickFind(_ records: [MediaItem], text: String, language: AppLanguage, limit: Int) -> [MediaItem] {
-        guard !text.isEmpty, limit > 0 else { return [] }
+        let parsed = ParsedSearch(text: text)
+        guard !parsed.isEmpty, limit > 0 else { return [] }
+        let rankQuery = parsed.freeText.isEmpty ? text.trimmed : parsed.freeText
         typealias Candidate = (rank: Int, item: MediaItem)
         func ranksBefore(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
             if lhs.rank != rhs.rank { return lhs.rank < rhs.rank }
             return lhs.item.updatedAt > rhs.item.updatedAt
         }
 
-        var matcher = SearchMatcher(parsed: ParsedSearch(text: text))
+        var matcher = SearchMatcher(parsed: parsed)
         var results: [Candidate] = []
         // Keep the normal six-result search bounded. Larger callers get a stable sort.
         let keepTop = limit <= 32
@@ -362,12 +387,16 @@ struct LibraryQuery {
             let displayTitle = item.displayTitle(in: language)
             let displayIsDistinct = displayTitle != item.title && displayTitle != item.titleEN
             let rank: Int
-            if item.title.hasCaseInsensitivePrefix(text) || item.titleEN.hasCaseInsensitivePrefix(text)
-                || (displayIsDistinct && displayTitle.hasCaseInsensitivePrefix(text)) {
-                rank = 0
-            } else if item.title.localizedCaseInsensitiveContains(text) || item.titleEN.localizedCaseInsensitiveContains(text)
-                || (displayIsDistinct && displayTitle.localizedCaseInsensitiveContains(text)) {
-                rank = 1
+            if !parsed.freeText.isEmpty {
+                if item.title.hasCaseInsensitivePrefix(rankQuery) || item.titleEN.hasCaseInsensitivePrefix(rankQuery)
+                    || (displayIsDistinct && displayTitle.hasCaseInsensitivePrefix(rankQuery)) {
+                    rank = 0
+                } else if item.title.localizedCaseInsensitiveContains(rankQuery) || item.titleEN.localizedCaseInsensitiveContains(rankQuery)
+                    || (displayIsDistinct && displayTitle.localizedCaseInsensitiveContains(rankQuery)) {
+                    rank = 1
+                } else {
+                    rank = 2
+                }
             } else {
                 rank = 2
             }
@@ -384,6 +413,48 @@ struct LibraryQuery {
         }
         if !keepTop { results.sort(by: ranksBefore) }
         return results.prefix(limit).map(\.item)
+    }
+
+    /// Computes tag-narrowing suggestions for the active filter bar, prioritizing direct children of active tags.
+    static func narrowingTags(
+        for projection: LibraryProjection,
+        catalogNodes: [TagNode],
+        activeTokens: [SearchTagToken],
+        untaggedOnly: Bool,
+        limit: Int = 8
+    ) -> [String] {
+        guard !untaggedOnly else { return [] }
+        let counts = activeTokens.isEmpty ? projection.tagCounts : projection.narrowedTagCounts
+        guard !counts.isEmpty else { return [] }
+        let activeKeys = Set(activeTokens.map(\.id))
+        let tree = TagCatalog.Tree(catalogNodes)
+        let outline = tree.flattenedOutline(collapsedIDs: [])
+        let activeAncestors = Set(
+            outline.lazy
+                .filter { activeKeys.contains($0.node.id) }
+                .flatMap(\.ancestors)
+                .map(MediaCategory.tagMatchKey)
+        )
+
+        var candidates: [(isChildOfActive: Bool, count: Int, order: Int, name: String)] = []
+        for (idx, row) in outline.enumerated() {
+            let name = row.node.name
+            if activeKeys.contains(row.node.id) || activeAncestors.contains(row.node.id) { continue }
+            let family = tree.expandedFamily(for: name)
+            let matchedCount = family.reduce(0) { $0 + counts[$1, default: 0] }
+            guard matchedCount > 0 else { continue }
+            let isChildOfActive = row.node.parent.map { activeKeys.contains(MediaCategory.tagMatchKey($0)) } ?? false
+            candidates.append((isChildOfActive, matchedCount, idx, name))
+        }
+
+        return candidates
+            .sorted { lhs, rhs in
+                if lhs.isChildOfActive != rhs.isChildOfActive { return lhs.isChildOfActive }
+                if lhs.count != rhs.count { return lhs.count > rhs.count }
+                return lhs.order < rhs.order
+            }
+            .prefix(limit)
+            .map(\.name)
     }
 
     private struct SearchMatcher {
@@ -442,8 +513,8 @@ struct LibraryQuery {
 
         private static func tag(_ tag: String, matchesTerm term: String) -> Bool {
             tag.localizedCaseInsensitiveContains(term)
-                || MediaCategory.localizedSubtag(tag, in: .en).localizedCaseInsensitiveContains(term)
-                || MediaCategory.localizedSubtag(tag, in: .zh).localizedCaseInsensitiveContains(term)
+                || MediaCategory.localizedTag(tag, in: .en).localizedCaseInsensitiveContains(term)
+                || MediaCategory.localizedTag(tag, in: .zh).localizedCaseInsensitiveContains(term)
         }
     }
 
