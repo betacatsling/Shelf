@@ -21,6 +21,7 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     sectionHeader(lang.tr("精选", "Collections"))
                     destinationRow(.fiveStar)
+                    destinationRow(.timeline)
                 }
             }
             .padding(.horizontal, 10)

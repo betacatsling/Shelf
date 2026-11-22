@@ -53,6 +53,14 @@ struct MainWindowView: View {
         let library = backgroundRequest == nil ? store.projection() : (prepared?.1 ?? .empty)
         let options = prepared?.0.options ?? request.options
         let showsDetails = store.selectedItemID.flatMap(store.item(withID:)) != nil
+        let isTimeline = store.selectedDestination.isTimeline
+        let visibleCount: Int = {
+            guard isTimeline else { return library.count }
+            return library.sections
+                .flatMap(\.items)
+                .filter { store.timelineCategories.contains($0.category) && ($0.startedAt != nil || $0.finishedAt != nil) }
+                .count
+        }()
 
         NavigationSplitView {
             SidebarView()
@@ -60,11 +68,13 @@ struct MainWindowView: View {
         } detail: {
             GeometryReader { workspace in
                 VStack(alignment: .leading, spacing: 0) {
-                    ShelfTopControlBar(counts: library.statusCounts) {
-                        quickAddPresetStatus = nil
-                        showAddSheet = true
+                    if !isTimeline {
+                        ShelfTopControlBar(counts: library.statusCounts) {
+                            quickAddPresetStatus = nil
+                            showAddSheet = true
+                        }
+                        Divider()
                     }
-                    Divider()
 
                     libraryCanvas(
                         library,
@@ -77,8 +87,8 @@ struct MainWindowView: View {
 
                     Divider()
                     ShelfBottomStatusBar(
-                        countText: itemCountText(library.count, compact: false),
-                        viewMode: store.viewMode,
+                        countText: statusBarCountText(visibleCount, isTimeline: isTimeline),
+                        isTimeline: isTimeline,
                         language: lang,
                         posterScale: $posterScale,
                         draggedPosterScale: $draggedPosterScale,
@@ -108,7 +118,7 @@ struct MainWindowView: View {
             }
             .background(Color(nsColor: .windowBackgroundColor))
             .navigationTitle(store.selectedDestination.title(in: lang))
-            .navigationSubtitle(itemCountText(library.count, compact: true))
+            .navigationSubtitle(itemCountText(visibleCount, compact: true))
             .toolbar {
                 toolbarContent(showsDetails: showsDetails, untaggedCountInView: library.untaggedCount)
             }
@@ -164,6 +174,16 @@ struct MainWindowView: View {
         return count == 1 ? "1 item" : "\(count) items"
     }
 
+    private func statusBarCountText(_ count: Int, isTimeline: Bool) -> String {
+        if isTimeline {
+            if lang == .zh {
+                return "时间线已排期 \(count) 项"
+            }
+            return count == 1 ? "1 item on timeline" : "\(count) items on timeline"
+        }
+        return itemCountText(count, compact: false)
+    }
+
     private func libraryCanvas(
         _ library: LibraryProjection,
         options: LibraryQuery.Options,
@@ -183,17 +203,9 @@ struct MainWindowView: View {
                 Text(lang.tr("无法读取作品库文件", "Could not read the library file"))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if library.count == 0 {
-                Spacer(minLength: 0)
-                LibraryEmptyStateView {
-                    quickAddPresetStatus = nil
-                    showAddSheet = true
-                }
-                Spacer(minLength: 0)
-            } else if store.viewMode == .timeline {
+            } else if options.destination.isTimeline {
                 TimelineView(
                     posters: library.sections.flatMap(\.items),
-                    groupByCategory: options.destination.activeCategory == nil,
                     selectedItemID: store.selectedItemID,
                     zoom: $timelineZoom,
                     effectiveZoom: draggedTimelineZoom ?? timelineZoom,
@@ -201,6 +213,13 @@ struct MainWindowView: View {
                     actions: timelineActions
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if library.count == 0 {
+                Spacer(minLength: 0)
+                LibraryEmptyStateView {
+                    quickAddPresetStatus = nil
+                    showAddSheet = true
+                }
+                Spacer(minLength: 0)
             } else {
                 NativePosterGrid(
                     sections: library.sections,
@@ -309,32 +328,15 @@ struct MainWindowView: View {
             onDeleteItem: { id in
                 store.deleteItem(id: id)
             },
-            onSwitchToGrid: {
-                store.viewMode = .grid
+            onAddItem: {
+                quickAddPresetStatus = nil
+                showAddSheet = true
             }
         )
     }
 
     @ToolbarContentBuilder
     private func toolbarContent(showsDetails: Bool, untaggedCountInView: Int) -> some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Picker(
-                lang.tr("视图模式", "View Mode"),
-                selection: Binding(
-                    get: { store.viewMode },
-                    set: { store.viewMode = $0 }
-                )
-            ) {
-                ForEach(LibraryViewMode.allCases) { mode in
-                    Image(systemName: mode.systemImage)
-                        .help(mode.title(in: lang))
-                        .tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .help(lang.tr("切换海报墙 / 时间线视图 (⌥⌘1 / ⌥⌘2)", "Switch between Grid and Timeline (⌥⌘1 / ⌥⌘2)"))
-        }
-
         ToolbarItem(placement: .primaryAction) {
             Button {
                 store.tagPickerItemID = nil

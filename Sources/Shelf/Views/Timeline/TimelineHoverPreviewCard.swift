@@ -9,11 +9,19 @@ enum TimelineDateFormatter {
         return df
     }()
 
-    static let compactMD: DateFormatter = {
+    static let zhMD: DateFormatter = {
         let df = DateFormatter()
-        df.locale = Locale(identifier: "en_US_POSIX")
+        df.locale = Locale(identifier: "zh_CN")
         df.calendar = Calendar(identifier: .gregorian)
-        df.dateFormat = "M/d"
+        df.dateFormat = "M月d日"
+        return df
+    }()
+
+    static let enMD: DateFormatter = {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US")
+        df.calendar = Calendar(identifier: .gregorian)
+        df.dateFormat = "MMM d"
         return df
     }()
 
@@ -25,25 +33,26 @@ enum TimelineDateFormatter {
         language: AppLanguage,
         compact: Bool = false
     ) -> String {
-        let startStr = (compact ? compactMD : ymd).string(from: start)
+        let fmt: DateFormatter = compact ? (language == .zh ? zhMD : enMD) : ymd
+        let startStr = fmt.string(from: start)
         if isOngoing {
-            return "\(startStr) → \(language.tr("进行中", "Ongoing"))"
+            return "\(startStr) – \(language.tr("至今", "Now"))"
         }
-        let endStr = (compact ? compactMD : ymd).string(from: end)
+        let endStr = fmt.string(from: end)
         if durationDays <= 1 || startStr == endStr {
             return startStr
         }
-        return "\(startStr) → \(endStr)"
+        return "\(startStr) – \(endStr)"
     }
 
     static func durationText(days: Int, isOngoing: Bool, language: AppLanguage) -> String {
         if isOngoing {
-            return language.tr("已持续 \(days) 天", "\(days)d so far")
+            return language.tr("第 \(days) 天", "Day \(days)")
         }
         if days <= 1 {
-            return language.tr("单日", "1 day")
+            return language.tr("1 天", "1d")
         }
-        return language.tr("共 \(days) 天", "\(days) days")
+        return language.tr("\(days) 天", "\(days)d")
     }
 }
 
@@ -53,18 +62,22 @@ struct TimelineHoverPreviewCard: View {
     let containerSize: CGSize
     let language: AppLanguage
 
-    private let cardWidth: CGFloat = 192
-    private let posterWidth: CGFloat = 156
-    private let posterHeight: CGFloat = 234
-    private let estimatedCardHeight: CGFloat = 338
-    private let edgePadding: CGFloat = 14
-    private let verticalGap: CGFloat = 12
+    private let posterWidth: CGFloat = 176
+    private let posterHeight: CGFloat = 264
+    private let cardPadding: CGFloat = 10
+    private let estimatedCardHeight: CGFloat = 342
+    private let edgePadding: CGFloat = 16
+    private let verticalGap: CGFloat = 10
+
+    private var cardWidth: CGFloat { posterWidth + cardPadding * 2 }
 
     private var clampedCenter: CGPoint {
+        // Anchor horizontally near the card's leading poster (slightly offset right)
+        let targetX = anchorRect.minX + min(anchorRect.width * 0.5, 96)
         let halfW = cardWidth / 2
         let minX = halfW + edgePadding
         let maxX = max(minX, containerSize.width - halfW - edgePadding)
-        let centerX = min(max(anchorRect.midX, minX), maxX)
+        let centerX = min(max(targetX, minX), maxX)
 
         let halfH = estimatedCardHeight / 2
         let spaceAbove = anchorRect.minY - verticalGap - edgePadding
@@ -88,7 +101,7 @@ struct TimelineHoverPreviewCard: View {
         let statusTint = poster.status.tintColor
 
         CoverPreview(fileName: poster.coverFileName) { artwork in
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 9) {
                 ZStack(alignment: .topTrailing) {
                     CoverArtworkView(
                         title: poster.title,
@@ -97,13 +110,13 @@ struct TimelineHoverPreviewCard: View {
                         image: artwork?.image,
                         paletteSeed: poster.paletteSeed,
                         language: language,
-                        cornerRadius: 10,
+                        cornerRadius: 11,
                         isHovered: true
                     )
                     .frame(width: posterWidth, height: posterHeight)
-                    .shadow(color: .black.opacity(0.32), radius: 12, x: 0, y: 6)
+                    .shadow(color: .black.opacity(0.38), radius: 14, x: 0, y: 8)
 
-                    // Status pill badge on cover top-right
+                    // Minimal translucent status dot pill
                     HStack(spacing: 4) {
                         Circle()
                             .fill(statusTint)
@@ -112,55 +125,38 @@ struct TimelineHoverPreviewCard: View {
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.white)
                     }
-                    .padding(.horizontal, 7)
+                    .padding(.horizontal, 7.5)
                     .padding(.vertical, 3.5)
-                    .background(Color.black.opacity(0.68), in: Capsule())
+                    .background(.black.opacity(0.62), in: Capsule())
                     .overlay(
                         Capsule()
-                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.6)
+                            .strokeBorder(.white.opacity(0.20), lineWidth: 0.6)
                     )
-                    .padding(7)
+                    .padding(8)
                 }
-                .frame(maxWidth: .infinity)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(poster.title)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(2)
-
-                    if let secondary = poster.secondaryTitle {
-                        Text(secondary)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(poster.title)
+                            .font(.system(size: 13.5, weight: .bold))
+                            .foregroundStyle(.primary)
                             .lineLimit(1)
+
+                        Spacer(minLength: 2)
+
+                        if poster.rating > 0 {
+                            HStack(spacing: 2) {
+                                Image(systemName: "star.fill")
+                                    .font(.system(size: 9.5))
+                                    .foregroundStyle(ShelfTheme.starGold)
+                                Text("\(poster.rating)")
+                                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
 
                     HStack(spacing: 6) {
-                        if poster.rating > 0 {
-                            StarRatingView(
-                                rating: .constant(poster.rating),
-                                starSize: 10,
-                                spacing: 2,
-                                interactive: false
-                            )
-                        }
-
-                        Spacer(minLength: 0)
-
-                        Text(TimelineDateFormatter.durationText(days: entry.durationDays, isOngoing: entry.isOngoing, language: language))
-                            .font(.system(size: 10, weight: .semibold, design: .rounded))
-                            .foregroundStyle(statusTint)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(statusTint.opacity(0.14), in: Capsule())
-                    }
-                    .padding(.top, 2)
-
-                    HStack(spacing: 4) {
-                        Image(systemName: "calendar")
-                            .font(.system(size: 9.5, weight: .medium))
-                            .foregroundStyle(.secondary)
                         Text(
                             TimelineDateFormatter.spanText(
                                 start: entry.startDay,
@@ -170,40 +166,59 @@ struct TimelineHoverPreviewCard: View {
                                 language: language
                             )
                         )
-                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                        .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                        .monospacedDigit()
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    }
 
-                    Text(language.tr("点击查看详情 · 双击编辑", "Click for details · Double-click to edit"))
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.tertiary)
-                        .padding(.top, 1)
+                        Spacer(minLength: 2)
+
+                        Text(
+                            TimelineDateFormatter.durationText(
+                                days: entry.durationDays,
+                                isOngoing: entry.isOngoing,
+                                language: language
+                            )
+                        )
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(statusTint)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1.5)
+                        .background(statusTint.opacity(0.15), in: Capsule())
+                    }
                 }
+                .padding(.horizontal, 2)
             }
-            .padding(14)
+            .padding(cardPadding)
             .frame(width: cardWidth)
             .background {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .fill(.regularMaterial)
+                    RoundedRectangle(cornerRadius: 17, style: .continuous)
+                        .fill(.ultraThickMaterial)
                     if let backdrop = artwork?.backdrop {
                         Image(decorative: backdrop, scale: 1)
                             .resizable()
                             .scaledToFill()
-                            .opacity(0.14)
-                            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                            .opacity(0.24)
+                            .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
                     } else {
-                        RoundedRectangle(cornerRadius: 15, style: .continuous)
-                            .fill(poster.category.accentColor.opacity(0.06))
+                        RoundedRectangle(cornerRadius: 17, style: .continuous)
+                            .fill(poster.category.accentColor.opacity(0.08))
                     }
                 }
             }
             .overlay(
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.9)
+                RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.32), Color.primary.opacity(0.10)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.9
+                    )
             )
-            .shadow(color: .black.opacity(0.32), radius: 22, x: 0, y: 12)
+            .shadow(color: .black.opacity(0.34), radius: 28, x: 0, y: 14)
         }
         .position(clampedCenter)
         .allowsHitTesting(false)

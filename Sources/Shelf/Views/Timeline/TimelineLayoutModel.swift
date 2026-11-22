@@ -28,15 +28,24 @@ struct TimelineMonthTick: Identifiable, Equatable, Sendable {
     let year: Int
     let month: Int
     let isYearStart: Bool
+    let isCurrentMonth: Bool
     let x: CGFloat
     let width: CGFloat
     let dayCount: Int
 }
 
+struct TimelineYearJump: Identifiable, Equatable, Sendable {
+    let year: Int
+    let targetMonthID: String
+    let itemCount: Int
+
+    var id: Int { year }
+}
+
 struct TimelineLayoutModel: Equatable, Sendable {
-    static let minBarWidth: CGFloat = 116
-    static let barHorizontalGap: CGFloat = 10
-    static let leadingCanvasPadding: CGFloat = 24
+    static let minBarWidth: CGFloat = 188
+    static let barHorizontalGap: CGFloat = 14
+    static let leadingCanvasPadding: CGFloat = 28
 
     let rangeStart: Date
     let rangeEnd: Date
@@ -48,8 +57,10 @@ struct TimelineLayoutModel: Equatable, Sendable {
     let todayMonthID: String
     let latestActivityMonthID: String
     let monthTicks: [TimelineMonthTick]
+    let yearJumps: [TimelineYearJump]
     let groups: [TimelineGroup]
     let scheduledCount: Int
+    let datedCountByCategory: [MediaCategory: Int]
     let undatedPosters: [LibraryPoster]
 
     static var gregorianCalendar: Calendar {
@@ -64,6 +75,7 @@ struct TimelineLayoutModel: Equatable, Sendable {
 
     static func build(
         posters: [LibraryPoster],
+        includedCategories: Set<MediaCategory> = Set(MediaCategory.allCases),
         groupByCategory: Bool,
         pointsPerDay: CGFloat,
         language: AppLanguage,
@@ -72,6 +84,9 @@ struct TimelineLayoutModel: Equatable, Sendable {
     ) -> TimelineLayoutModel {
         let safePPD = max(pointsPerDay, 0.5)
         let todayDay = calendar.startOfDay(for: now)
+        let todayComps = calendar.dateComponents([.year, .month], from: todayDay)
+        let todayYear = todayComps.year ?? 2000
+        let todayMonth = todayComps.month ?? 1
 
         struct RawSpan {
             let poster: LibraryPoster
@@ -81,12 +96,19 @@ struct TimelineLayoutModel: Equatable, Sendable {
             let durationDays: Int
         }
 
+        var datedCountByCategory: [MediaCategory: Int] = [:]
         var rawSpans: [RawSpan] = []
         var undated: [LibraryPoster] = []
         rawSpans.reserveCapacity(posters.count)
 
         for poster in posters {
-            if let span = poster.effectiveTimelineSpan(now: now) {
+            let span = poster.effectiveTimelineSpan(now: now)
+            if span != nil {
+                datedCountByCategory[poster.category, default: 0] += 1
+            }
+            guard includedCategories.contains(poster.category) else { continue }
+
+            if let span {
                 let startDay = calendar.startOfDay(for: span.start)
                 let endDay = max(startDay, calendar.startOfDay(for: span.end))
                 let delta = calendar.dateComponents([.day], from: startDay, to: endDay).day ?? 0
@@ -138,12 +160,33 @@ struct TimelineLayoutModel: Equatable, Sendable {
                     year: year,
                     month: month,
                     isYearStart: month == 1,
+                    isCurrentMonth: year == todayYear && month == todayMonth,
                     x: xForDay(cursor),
                     width: CGFloat(dayCount) * safePPD,
                     dayCount: dayCount
                 )
             )
             cursor = nextMonth
+        }
+
+        // Compute quick-jump pills for every year that actually contains entries
+        var yearBuckets: [Int: (earliestMonth: Int, count: Int)] = [:]
+        for span in rawSpans {
+            let c = calendar.dateComponents([.year, .month], from: span.startDay)
+            guard let y = c.year, let m = c.month else { continue }
+            if let existing = yearBuckets[y] {
+                yearBuckets[y] = (min(existing.earliestMonth, m), existing.count + 1)
+            } else {
+                yearBuckets[y] = (m, 1)
+            }
+        }
+        let yearJumps = yearBuckets.keys.sorted().map { year in
+            let info = yearBuckets[year]!
+            return TimelineYearJump(
+                year: year,
+                targetMonthID: monthID(year: year, month: info.earliestMonth),
+                itemCount: info.count
+            )
         }
 
         let groupedRaw: [(id: String, category: MediaCategory?, title: String, items: [RawSpan])]
@@ -178,7 +221,7 @@ struct TimelineLayoutModel: Equatable, Sendable {
 
             for span in sorted {
                 let x = xForDay(span.startDay)
-                let actualWidth = max(4, CGFloat(span.durationDays) * safePPD)
+                let actualWidth = max(6, CGFloat(span.durationDays) * safePPD)
                 let width = max(actualWidth, minBarWidth)
 
                 let lane: Int
@@ -190,7 +233,7 @@ struct TimelineLayoutModel: Equatable, Sendable {
                     laneEndX.append(x + width + barHorizontalGap)
                 }
 
-                maxOccupiedX = max(maxOccupiedX, x + width + leadingCanvasPadding)
+                maxOccupiedX = max(maxOccupiedX, x + width + leadingCanvasPadding * 2)
                 entries.append(
                     TimelineEntry(
                         poster: span.poster,
@@ -217,8 +260,7 @@ struct TimelineLayoutModel: Equatable, Sendable {
             )
         }
 
-        let todayComps = calendar.dateComponents([.year, .month], from: todayDay)
-        let todayMonthID = monthID(year: todayComps.year ?? 2000, month: todayComps.month ?? 1)
+        let todayMonthID = monthID(year: todayYear, month: todayMonth)
         let latestAnchor = rawSpans.isEmpty ? todayDay : latestDataDay
         let latestComps = calendar.dateComponents([.year, .month], from: latestAnchor)
         let latestActivityMonthID = monthID(year: latestComps.year ?? 2000, month: latestComps.month ?? 1)
@@ -234,8 +276,10 @@ struct TimelineLayoutModel: Equatable, Sendable {
             todayMonthID: todayMonthID,
             latestActivityMonthID: latestActivityMonthID,
             monthTicks: monthTicks,
+            yearJumps: yearJumps,
             groups: groups,
             scheduledCount: rawSpans.count,
+            datedCountByCategory: datedCountByCategory,
             undatedPosters: undated
         )
     }

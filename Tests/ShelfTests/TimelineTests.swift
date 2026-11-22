@@ -207,4 +207,43 @@ struct TimelineTests {
         let lanes = Set(model.groups[0].entries.map(\.lane))
         #expect(lanes == [0, 1])
     }
+
+    @MainActor
+    @Test func testTimelineCategoryTogglesAndSidebarDatedCount() {
+        let cal = Self.utcCalendar
+        let now = Self.day(2026, 6, 15)
+        let g = MediaItem(title: "G", category: .game, status: .completed, startedAt: Self.day(2025, 5, 1), finishedAt: Self.day(2025, 5, 5))
+        let n = MediaItem(title: "N", category: .novel, status: .completed, startedAt: Self.day(2026, 2, 1), finishedAt: Self.day(2026, 2, 10))
+        let v = MediaItem(title: "V", category: .video, status: .backlog)
+
+        let store = LibraryStore(previewItems: [g, n, v])
+        #expect(store.count(for: .timeline) == 2)
+
+        let posters = [g, n, v].map { LibraryPoster($0, language: .en) }
+        let onlyGames = TimelineLayoutModel.build(
+            posters: posters,
+            includedCategories: [.game],
+            groupByCategory: false,
+            pointsPerDay: 8.0,
+            language: .en,
+            now: now,
+            calendar: cal
+        )
+        #expect(onlyGames.scheduledCount == 1)
+        #expect(onlyGames.datedCountByCategory[.game] == 1)
+        #expect(onlyGames.datedCountByCategory[.novel] == 1)
+        #expect(onlyGames.yearJumps.map(\.year) == [2025])
+
+        let allCats = TimelineLayoutModel.build(
+            posters: posters,
+            includedCategories: [.game, .novel, .video],
+            groupByCategory: true,
+            pointsPerDay: 8.0,
+            language: .en,
+            now: now,
+            calendar: cal
+        )
+        #expect(allCats.scheduledCount == 2)
+        #expect(allCats.yearJumps.map(\.year) == [2025, 2026])
+    }
 }

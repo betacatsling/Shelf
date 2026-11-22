@@ -21,15 +21,13 @@ struct ShelfTopControlBar: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .layoutPriority(1)
 
-            if store.viewMode == .grid {
-                ShelfSortControl(
-                    sortField: store.sortField,
-                    sortAscending: store.sortAscending,
-                    language: lang,
-                    onSelectField: { store.selectSortField($0) },
-                    onSetAscending: { store.sortAscending = $0 }
-                )
-            }
+            ShelfSortControl(
+                sortField: store.sortField,
+                sortAscending: store.sortAscending,
+                language: lang,
+                onSelectField: { store.selectSortField($0) },
+                onSetAscending: { store.sortAscending = $0 }
+            )
 
             Button(action: onAddItem) {
                 HStack(spacing: 5) {

@@ -568,7 +568,7 @@ struct LibraryQuery {
 extension SidebarDestination {
     func includes(_ item: MediaItem) -> Bool {
         switch self {
-        case .all: return true
+        case .all, .timeline: return true
         case .category(let category): return item.category == category
         case .fiveStar: return item.rating == 5
         }

@@ -7,10 +7,19 @@ final class LibraryStore {
     var language: AppLanguage {
         didSet { UserDefaults.standard.set(language.rawValue, forKey: "shelf.language") }
     }
-    var viewMode: LibraryViewMode = {
-        UserDefaults.standard.string(forKey: "shelf.viewMode").flatMap(LibraryViewMode.init(rawValue:)) ?? .grid
+    var timelineCategories: Set<MediaCategory> = {
+        guard let raw = UserDefaults.standard.string(forKey: "shelf.timelineCategories") else {
+            return Set(MediaCategory.allCases)
+        }
+        return Set(raw.split(separator: ",").compactMap { MediaCategory(rawValue: String($0)) })
     }() {
-        didSet { UserDefaults.standard.set(viewMode.rawValue, forKey: "shelf.viewMode") }
+        didSet {
+            let encoded = MediaCategory.allCases
+                .filter { timelineCategories.contains($0) }
+                .map(\.rawValue)
+                .joined(separator: ",")
+            UserDefaults.standard.set(encoded, forKey: "shelf.timelineCategories")
+        }
     }
     var selectedDestination: SidebarDestination = .all
     var statusFilter: StatusFilterOption = .allShelves
@@ -69,12 +78,14 @@ final class LibraryStore {
         var total = 0
         var categories: [MediaCategory: Int] = [:]
         var fiveStar = 0
+        var dated = 0
         var samples = 0
 
         mutating func include(_ item: MediaItem, delta: Int) {
             total += delta
             categories[item.category, default: 0] += delta
             if item.rating == 5 { fiveStar += delta }
+            if item.hasTimelineDates { dated += delta }
             if item.isSample { samples += delta }
         }
     }
@@ -189,6 +200,14 @@ final class LibraryStore {
         language = (language == .zh) ? .en : .zh
     }
 
+    func toggleTimelineCategory(_ category: MediaCategory) {
+        if timelineCategories.contains(category) {
+            timelineCategories.remove(category)
+        } else {
+            timelineCategories.insert(category)
+        }
+    }
+
     private var activeTagGroupFilters: [TagGroupFilter] {
         activeFilterTags.map { TagGroupFilter(rootTag: $0, matchingTags: expandedTagFamily(for: $0)) }
     }
@@ -212,8 +231,10 @@ final class LibraryStore {
 
     /// Reveals an item in the main library view, broadening destination/filters only if currently hidden.
     func revealItem(_ item: MediaItem) {
-        if !selectedDestination.includes(item) {
+        if !selectedDestination.includes(item) || (selectedDestination.isTimeline && !item.hasTimelineDates) {
             selectedDestination = .all
+        } else if selectedDestination.isTimeline && !timelineCategories.contains(item.category) {
+            timelineCategories.insert(item.category)
         }
         if case .single(let status) = statusFilter, status != item.status {
             statusFilter = .allShelves
@@ -246,6 +267,7 @@ final class LibraryStore {
         case .all: return counts.total
         case .category(let category): return counts.categories[category, default: 0]
         case .fiveStar: return counts.fiveStar
+        case .timeline: return counts.dated
         }
     }
 

@@ -11,34 +11,36 @@ struct TimelineActions {
     let onChangeRating: (UUID, Int) -> Void
     let onClearDates: (UUID) -> Void
     let onDeleteItem: (UUID) -> Void
-    let onSwitchToGrid: () -> Void
+    let onAddItem: () -> Void
 }
 
 struct TimelineView: View {
+    @Environment(LibraryStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let posters: [LibraryPoster]
-    let groupByCategory: Bool
     let selectedItemID: UUID?
     @Binding var zoom: Double
     let effectiveZoom: Double
     let language: AppLanguage
     let actions: TimelineActions
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hoveredEntry: TimelineEntry?
     @State private var hoveredAnchorRect: CGRect = .zero
     @State private var showUndatedPopover = false
     @State private var undatedQuery = ""
     @State private var scrollToTargetID: String?
+    @State private var scrollTargetAnchor: UnitPoint = .center
     @State private var scrollNonce = 0
     @State private var hasPerformedInitialScroll = false
     @State private var pinchStartZoom: Double?
 
-    private let rulerHeight: CGFloat = 46
+    private let rulerHeight: CGFloat = 52
     private let groupHeaderHeight: CGFloat = 34
-    private let laneHeight: CGFloat = 44
-    private let laneSpacing: CGFloat = 8
-    private let groupTopPadding: CGFloat = 10
-    private let groupBottomPadding: CGFloat = 16
+    private let laneHeight: CGFloat = 68
+    private let laneSpacing: CGFloat = 12
+    private let groupTopPadding: CGFloat = 14
+    private let groupBottomPadding: CGFloat = 22
     private let canvasCoordinateSpace = "shelf.timelineCanvas"
 
     private var pointsPerDay: CGFloat {
@@ -48,7 +50,8 @@ struct TimelineView: View {
     private var layout: TimelineLayoutModel {
         TimelineLayoutModel.build(
             posters: posters,
-            groupByCategory: groupByCategory,
+            includedCategories: store.timelineCategories,
+            groupByCategory: store.timelineCategories.count > 1,
             pointsPerDay: pointsPerDay,
             language: language
         )
@@ -64,7 +67,7 @@ struct TimelineView: View {
         let model = layout
 
         VStack(spacing: 0) {
-            timelineSubToolbar(model: model)
+            timelineHeaderBar(model: model)
             Divider()
 
             if model.scheduledCount == 0 {
@@ -74,6 +77,9 @@ struct TimelineView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .onChange(of: store.timelineCategories) { _, _ in
+            hoveredEntry = nil
+        }
         .onChange(of: posters.count) { _, _ in
             if let hovered = hoveredEntry, !posters.contains(where: { $0.id == hovered.id }) {
                 hoveredEntry = nil
@@ -81,55 +87,49 @@ struct TimelineView: View {
         }
     }
 
-    // MARK: - Sub-Toolbar
+    // MARK: - Unified Clean Top Control Bar
 
-    private func timelineSubToolbar(model: TimelineLayoutModel) -> some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 8) {
-                Label(
-                    language.tr(
-                        "时间线已排期 \(model.scheduledCount) 项",
-                        "\(model.scheduledCount) on timeline"
-                    ),
-                    systemImage: "calendar.day.timeline.left"
-                )
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-
-                if !model.undatedPosters.isEmpty {
-                    Button {
-                        undatedQuery = ""
-                        showUndatedPopover.toggle()
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "clock.badge.questionmark")
-                                .font(.system(size: 11, weight: .medium))
-                            Text(
-                                language.tr(
-                                    "未设日期 (\(model.undatedPosters.count))",
-                                    "Undated (\(model.undatedPosters.count))"
-                                )
-                            )
-                            .font(.system(size: 11.5, weight: .medium))
+    private func timelineHeaderBar(model: TimelineLayoutModel) -> some View {
+        HStack(spacing: 10) {
+            // Multi-select Category Toggle Chips (Game / Text / Video)
+            HStack(spacing: 6) {
+                ForEach(MediaCategory.allCases) { category in
+                    let isOn = store.timelineCategories.contains(category)
+                    let count = model.datedCountByCategory[category, default: 0]
+                    CategoryToggleChip(
+                        category: category,
+                        count: count,
+                        isSelected: isOn,
+                        language: language
+                    ) {
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
+                            store.toggleTimelineCategory(category)
                         }
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 4)
-                        .background(Color.primary.opacity(0.06), in: Capsule())
-                        .overlay(
-                            Capsule()
-                                .strokeBorder(Color.primary.opacity(0.09), lineWidth: 0.7)
-                        )
                     }
-                    .buttonStyle(.plain)
-                    .popover(isPresented: $showUndatedPopover, arrowEdge: .bottom) {
-                        undatedPopover(posters: model.undatedPosters)
-                    }
-                    .help(language.tr("查看尚未设置日期的作品，点击后可在右侧补录日期", "Browse undated items and click any to set dates in the detail panel"))
                 }
             }
+            .fixedSize()
 
-            Spacer(minLength: 12)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    Divider().frame(height: 16).opacity(0.55)
+                    statusFilterMenu
+                    yearJumpPills(model: model)
+                    undatedButton(model: model, compact: false)
+                }
+
+                HStack(spacing: 8) {
+                    Divider().frame(height: 16).opacity(0.55)
+                    statusFilterMenu
+                    undatedButton(model: model, compact: true)
+                }
+
+                HStack(spacing: 6) {
+                    Divider().frame(height: 16).opacity(0.55)
+                    statusFilterMenu
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             // Zoom presets (Year / Quarter / Month / Week)
             HStack(spacing: 2) {
@@ -143,7 +143,7 @@ struct TimelineView: View {
                         Text(preset.title(in: language))
                             .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
                             .foregroundStyle(isSelected ? Color.white : Color.secondary)
-                            .padding(.horizontal, 9)
+                            .padding(.horizontal, 8)
                             .padding(.vertical, 4)
                             .background(
                                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -155,39 +155,176 @@ struct TimelineView: View {
                 }
             }
             .padding(2)
-            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .fixedSize()
 
             Button {
-                triggerScroll(to: model.todayMonthID)
+                triggerScroll(to: model.todayMonthID, anchor: .center)
             } label: {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(Color.accentColor)
-                        .frame(width: 6, height: 6)
-                    Text(language.tr("今天", "Today"))
-                        .font(.system(size: 11.5, weight: .semibold))
-                }
+                Text(language.tr("今天", "Today"))
+                    .font(.system(size: 11.5, weight: .semibold))
             }
             .buttonStyle(
                 ShelfButtonStyle(
                     variant: .secondary,
                     horizontalPadding: 10,
-                    verticalPadding: 4.5,
+                    verticalPadding: 5,
                     cornerRadius: 7
                 )
             )
+            .fixedSize()
             .help(language.tr("跳转到今天所在月份", "Jump to today"))
+
+            Button(action: actions.onAddItem) {
+                Image(systemName: "plus")
+                    .font(.system(size: 11.5, weight: .bold))
+            }
+            .buttonStyle(
+                ShelfButtonStyle(
+                    variant: .primary,
+                    horizontalPadding: 9,
+                    verticalPadding: 5.5,
+                    cornerRadius: 7.5
+                )
+            )
+            .fixedSize()
+            .disabled(!store.isReady)
+            .help(language.tr("添加新作品 (⌘N)", "Add new item (⌘N)"))
         }
         .padding(.horizontal, ShelfTheme.horizontalPadding)
-        .padding(.vertical, 7)
+        .padding(.vertical, 9)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    @ViewBuilder
+    private func yearJumpPills(model: TimelineLayoutModel) -> some View {
+        if model.yearJumps.count > 1 {
+            HStack(spacing: 3) {
+                ForEach(model.yearJumps) { jump in
+                    Button {
+                        triggerScroll(to: jump.targetMonthID, anchor: .leading)
+                    } label: {
+                        Text(String(jump.year))
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3.5)
+                            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help(language.tr("跳转到 \(jump.year) 年（\(jump.itemCount) 项）", "Jump to \(jump.year) (\(jump.itemCount))"))
+                }
+            }
+            .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private func undatedButton(model: TimelineLayoutModel, compact: Bool) -> some View {
+        if !model.undatedPosters.isEmpty {
+            Button {
+                undatedQuery = ""
+                showUndatedPopover.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "calendar.badge.plus")
+                        .font(.system(size: 11, weight: .medium))
+                    Text(
+                        compact
+                            ? "\(model.undatedPosters.count)"
+                            : language.tr("待补 \(model.undatedPosters.count)", "Undated \(model.undatedPosters.count)")
+                    )
+                    .font(.system(size: 11.5, weight: .medium))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8.5)
+                .padding(.vertical, 4.5)
+                .background(Color.primary.opacity(0.055), in: Capsule())
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+            .popover(isPresented: $showUndatedPopover, arrowEdge: .bottom) {
+                undatedPopover(posters: model.undatedPosters)
+            }
+            .help(language.tr("查看当前分类下未设日期的作品，点击可在右侧补录", "Browse undated items and set dates in the detail panel"))
+        }
+    }
+
+    private var statusFilterMenu: some View {
+        let activeStatus: TrackingStatus? = {
+            if case .single(let st) = store.statusFilter { return st }
+            return nil
+        }()
+
+        return Menu {
+            Button {
+                store.statusFilter = .allShelves
+            } label: {
+                if activeStatus == nil {
+                    Label(language.tr("全部状态", "All Statuses"), systemImage: "checkmark")
+                } else {
+                    Text(language.tr("全部状态", "All Statuses"))
+                }
+            }
+            Divider()
+            ForEach(TrackingStatus.filterOrder) { st in
+                Button {
+                    store.statusFilter = .single(st)
+                } label: {
+                    if activeStatus == st {
+                        Label(st.genericTitle(in: language), systemImage: "checkmark")
+                    } else {
+                        Text(st.genericTitle(in: language))
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                if let activeStatus {
+                    Circle()
+                        .fill(activeStatus.tintColor)
+                        .frame(width: 6, height: 6)
+                    Text(activeStatus.genericTitle(in: language))
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(.primary)
+                } else {
+                    Image(systemName: "line.3.horizontal.decrease")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text(language.tr("状态", "Status"))
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4.5)
+            .background(
+                activeStatus != nil ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.055),
+                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(language.tr("按状态筛选时间线", "Filter timeline by status"))
     }
 
     // MARK: - Main Timeline Canvas
 
     private func timelineCanvas(model: TimelineLayoutModel) -> some View {
         GeometryReader { viewport in
-            let contentHeight = totalLanesHeight(model: model, minHeight: max(320, viewport.size.height - rulerHeight - 1))
+            let contentHeight = totalLanesHeight(
+                model: model,
+                minHeight: max(360, viewport.size.height - rulerHeight - 1)
+            )
 
             ZStack {
                 ScrollViewReader { scrollProxy in
@@ -197,6 +334,7 @@ struct TimelineView: View {
                                 .frame(width: model.totalWidth, height: rulerHeight, alignment: .topLeading)
 
                             Divider()
+                                .opacity(0.75)
 
                             ScrollView(.vertical, showsIndicators: true) {
                                 ZStack(alignment: .topLeading) {
@@ -207,7 +345,7 @@ struct TimelineView: View {
                                             actions.onDeselectAll()
                                         }
 
-                                    monthBandsAndGridlines(model: model, height: contentHeight)
+                                    monthGridlines(model: model, height: contentHeight)
 
                                     todayGuideLine(model: model, height: contentHeight)
 
@@ -229,8 +367,8 @@ struct TimelineView: View {
                     }
                     .onChange(of: scrollNonce) { _, _ in
                         guard let target = scrollToTargetID else { return }
-                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
-                            scrollProxy.scrollTo(target, anchor: .center)
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) {
+                            scrollProxy.scrollTo(target, anchor: scrollTargetAnchor)
                         }
                     }
                 }
@@ -266,8 +404,8 @@ struct TimelineView: View {
                         reduceMotion
                             ? .opacity
                             : .asymmetric(
-                                insertion: .scale(scale: 0.90).combined(with: .opacity),
-                                removal: .scale(scale: 0.95).combined(with: .opacity)
+                                insertion: .scale(scale: 0.88).combined(with: .opacity),
+                                removal: .scale(scale: 0.94).combined(with: .opacity)
                             )
                     )
                     .zIndex(100)
@@ -275,19 +413,19 @@ struct TimelineView: View {
             }
             .coordinateSpace(name: canvasCoordinateSpace)
             .animation(
-                reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.84),
+                reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.82),
                 value: hoveredEntry?.id
             )
         }
     }
 
-    // MARK: - Calendar Ruler
+    // MARK: - Editorial Calendar Ruler
 
     private func calendarRuler(model: TimelineLayoutModel) -> some View {
         ZStack(alignment: .topLeading) {
             Color(nsColor: .windowBackgroundColor)
 
-            // Layout-participating month cells so ScrollViewReader can scroll accurately to any month
+            // Layout-participating month columns so ScrollViewReader scrolls accurately
             HStack(spacing: 0) {
                 Color.clear
                     .frame(width: TimelineLayoutModel.leadingCanvasPadding, height: rulerHeight)
@@ -299,17 +437,17 @@ struct TimelineView: View {
                 }
             }
 
-            // Floating Today pill on the ruler
+            // Sleek floating Today capsule indicator
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
                 Text(language.tr("今天", "Today"))
                     .font(.system(size: 9.5, weight: .bold))
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2.5)
                     .background(Color.accentColor, in: Capsule())
-                    .shadow(color: Color.accentColor.opacity(0.35), radius: 4, x: 0, y: 1)
-                    .padding(.bottom, 3)
+                    .shadow(color: Color.accentColor.opacity(0.4), radius: 5, x: 0, y: 1.5)
+                    .padding(.bottom, 4)
             }
             .position(x: model.todayX, y: rulerHeight / 2)
             .allowsHitTesting(false)
@@ -322,31 +460,34 @@ struct TimelineView: View {
         let dayStep = pointsPerDay >= 15 ? 1 : (pointsPerDay >= 9 ? 5 : 10)
 
         return ZStack(alignment: .topLeading) {
-            // Left border tick line
+            if tick.isCurrentMonth {
+                Color.accentColor.opacity(0.045)
+            }
+
+            // Hairline vertical boundary
             Rectangle()
-                .fill(Color.primary.opacity(tick.isYearStart ? 0.22 : 0.09))
-                .frame(width: tick.isYearStart ? 1.2 : 0.75, height: rulerHeight)
+                .fill(Color.primary.opacity(tick.isYearStart ? 0.18 : 0.065))
+                .frame(width: tick.isYearStart ? 1 : 0.6, height: rulerHeight)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     if showYear {
                         Text(String(tick.year))
-                            .font(.system(size: 11, weight: .bold, design: .rounded))
-                            .foregroundStyle(.primary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                            .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(.primary.opacity(0.75))
+                            .tracking(0.4)
                     }
 
-                    if tick.width >= 30 {
+                    if tick.width >= 32 {
                         Text(monthTitle)
-                            .font(.system(size: 11.5, weight: tick.isYearStart ? .semibold : .medium))
-                            .foregroundStyle(tick.isYearStart ? .primary : .secondary)
+                            .font(.system(size: 12, weight: tick.isCurrentMonth ? .bold : (tick.isYearStart ? .semibold : .medium)))
+                            .foregroundStyle(tick.isCurrentMonth ? Color.accentColor : (tick.isYearStart ? .primary : .secondary))
                             .lineLimit(1)
                     }
                 }
-                .padding(.leading, 6)
-                .padding(.top, 6)
+                .padding(.leading, 8)
+                .padding(.top, 9)
 
                 Spacer(minLength: 0)
 
@@ -355,19 +496,20 @@ struct TimelineView: View {
                         ForEach(Array(stride(from: dayStep == 1 ? 1 : dayStep, through: tick.dayCount, by: dayStep)), id: \.self) { day in
                             let dayOffsetX = CGFloat(day - 1) * pointsPerDay
                             if dayOffsetX + 16 <= tick.width {
-                                VStack(alignment: .leading, spacing: 1) {
+                                VStack(alignment: .leading, spacing: 1.5) {
                                     Text("\(day)")
-                                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                                        .monospacedDigit()
                                         .foregroundStyle(.tertiary)
                                     Rectangle()
-                                        .fill(Color.primary.opacity(0.14))
-                                        .frame(width: 0.7, height: 5)
+                                        .fill(Color.primary.opacity(0.12))
+                                        .frame(width: 0.6, height: 5)
                                 }
-                                .offset(x: dayOffsetX + 2)
+                                .offset(x: dayOffsetX + 3)
                             }
                         }
                     }
-                    .frame(height: 16, alignment: .bottomLeading)
+                    .frame(height: 18, alignment: .bottomLeading)
                 }
             }
         }
@@ -382,21 +524,21 @@ struct TimelineView: View {
         return (1...12).contains(month) ? names[month - 1] : "\(month)"
     }
 
-    // MARK: - Gridlines & Today Marker
+    // MARK: - Subtle Canvas Hairlines & Today Marker
 
-    private func monthBandsAndGridlines(model: TimelineLayoutModel, height: CGFloat) -> some View {
+    private func monthGridlines(model: TimelineLayoutModel, height: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
-            ForEach(Array(model.monthTicks.enumerated()), id: \.element.id) { idx, tick in
-                if idx.isMultiple(of: 2) {
+            ForEach(model.monthTicks) { tick in
+                if tick.isCurrentMonth {
                     Rectangle()
-                        .fill(Color.primary.opacity(0.022))
+                        .fill(Color.accentColor.opacity(0.025))
                         .frame(width: tick.width, height: height)
                         .offset(x: tick.x)
                 }
 
                 Rectangle()
-                    .fill(Color.primary.opacity(tick.isYearStart ? 0.16 : 0.065))
-                    .frame(width: tick.isYearStart ? 1.2 : 0.75, height: height)
+                    .fill(Color.primary.opacity(tick.isYearStart ? 0.13 : 0.048))
+                    .frame(width: tick.isYearStart ? 1 : 0.6, height: height)
                     .offset(x: tick.x)
             }
         }
@@ -409,19 +551,20 @@ struct TimelineView: View {
                 LinearGradient(
                     colors: [
                         Color.accentColor.opacity(0.75),
-                        Color.accentColor.opacity(0.30)
+                        Color.accentColor.opacity(0.22),
+                        Color.accentColor.opacity(0.06)
                     ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
             )
             .frame(width: 1.5, height: height)
-            .shadow(color: Color.accentColor.opacity(0.35), radius: 4, x: 0, y: 0)
+            .shadow(color: Color.accentColor.opacity(0.35), radius: 5, x: 0, y: 0)
             .offset(x: model.todayX - 0.75)
             .allowsHitTesting(false)
     }
 
-    // MARK: - Swimlanes & Gantt Bars
+    // MARK: - Swimlanes & Artwork-Infused Timeline Cards
 
     private func swimlanesContent(model: TimelineLayoutModel) -> some View {
         let showGroupHeaders = model.groups.count > 1
@@ -437,7 +580,7 @@ struct TimelineView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     if index > 0 {
                         Divider()
-                            .opacity(0.65)
+                            .opacity(0.45)
                     }
 
                     if showGroupHeaders {
@@ -449,15 +592,17 @@ struct TimelineView: View {
                             }
                             Text(group.title)
                                 .font(.system(size: 12.5, weight: .bold))
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(.primary.opacity(0.88))
                             Text("\(group.entries.count)")
                                 .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .monospacedDigit()
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 6.5)
                                 .padding(.vertical, 1.5)
-                                .background(Color.primary.opacity(0.07), in: Capsule())
+                                .background(Color.primary.opacity(0.06), in: Capsule())
                         }
                         .padding(.leading, TimelineLayoutModel.leadingCanvasPadding)
+                        .padding(.top, 8)
                         .frame(height: groupHeaderHeight, alignment: .leading)
                     }
 
@@ -467,9 +612,10 @@ struct TimelineView: View {
                             let isSelected = selectedItemID == entry.id
                             let isHovered = hoveredEntry?.id == entry.id
 
-                            TimelineBarView(
+                            TimelineCardView(
                                 entry: entry,
                                 height: laneHeight,
+                                showCategoryGlyph: showGroupHeaders == false && store.timelineCategories.count > 1,
                                 isSelected: isSelected,
                                 isHovered: isHovered,
                                 language: language,
@@ -506,7 +652,7 @@ struct TimelineView: View {
             sum += CGFloat(max(0, group.laneCount - 1)) * laneSpacing
             sum += groupBottomPadding
         }
-        return max(minHeight, sum + 24)
+        return max(minHeight, sum + 28)
     }
 
     // MARK: - Undated Items Popover & Empty State
@@ -522,11 +668,12 @@ struct TimelineView: View {
 
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(language.tr("尚未设置时间线日期", "Items Without Dates"))
+                Text(language.tr("待补录日期", "Undated Items"))
                     .font(.system(size: 13, weight: .bold))
                 Spacer()
                 Text("\(filtered.count)")
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2)
@@ -538,7 +685,7 @@ struct TimelineView: View {
                 .foregroundStyle(.secondary)
 
             if posters.count > 8 {
-                TextField(language.tr("筛选未设日期作品…", "Filter undated items…"), text: $undatedQuery)
+                TextField(language.tr("搜索作品…", "Filter items…"), text: $undatedQuery)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12))
             }
@@ -551,13 +698,16 @@ struct TimelineView: View {
                             actions.onEnsureSelectItem(poster.id)
                         } label: {
                             HStack(spacing: 9) {
-                                TimelineMiniCover(
-                                    fileName: poster.coverFileName,
-                                    category: poster.category,
-                                    paletteSeed: poster.paletteSeed,
-                                    width: 22,
-                                    height: 33
-                                )
+                                CoverPreview(fileName: poster.coverFileName) { artwork in
+                                    TimelineMiniPoster(
+                                        image: artwork?.image,
+                                        category: poster.category,
+                                        paletteSeed: poster.paletteSeed,
+                                        width: 24,
+                                        height: 36,
+                                        cornerRadius: 4.5
+                                    )
+                                }
 
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(poster.title)
@@ -597,19 +747,24 @@ struct TimelineView: View {
     }
 
     private func emptyTimelineState(model: TimelineLayoutModel) -> some View {
-        VStack(spacing: 14) {
-            Image(systemName: "calendar.day.timeline.left")
+        let allDisabled = store.timelineCategories.isEmpty
+
+        return VStack(spacing: 14) {
+            Image(systemName: allDisabled ? "slider.horizontal.3" : "calendar.day.timeline.left")
                 .font(.system(size: 36, weight: .light))
                 .foregroundStyle(.secondary)
 
-            Text(language.tr("当前筛选下还没有设置日期的作品", "No Dated Items in Current View"))
-                .font(.system(size: 15, weight: .semibold))
+            Text(
+                allDisabled
+                    ? language.tr("尚未勾选要显示的分类", "No Categories Selected")
+                    : language.tr("当前筛选下还没有设置日期的作品", "No Dated Items in Current View")
+            )
+            .font(.system(size: 15, weight: .semibold))
 
             Text(
-                language.tr(
-                    "在作品详情栏或编辑窗口中填入开始/结束日期后，它们就会自动排布在这张横向时间线上。",
-                    "Add a start or finish date in the detail panel or editor to see items laid out on the timeline."
-                )
+                allDisabled
+                    ? language.tr("请在上方开启「游戏」「文字」或「影像」开关以查看对应时间线。", "Enable Games, Texts, or Videos above to display them on the timeline.")
+                    : language.tr("点击下方待补录列表，或在作品详情栏中填入起止日期后，就会出现在这张时间线上。", "Pick an undated item below or add dates in the detail panel to see it here.")
             )
             .font(.system(size: 12.5))
             .foregroundStyle(.secondary)
@@ -617,38 +772,119 @@ struct TimelineView: View {
             .frame(maxWidth: 360)
 
             HStack(spacing: 10) {
+                if allDisabled || store.timelineCategories.count < MediaCategory.allCases.count {
+                    Button(language.tr("显示全部类别", "Show All Categories")) {
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
+                            store.timelineCategories = Set(MediaCategory.allCases)
+                        }
+                    }
+                    .buttonStyle(ShelfButtonStyle(variant: .primary, horizontalPadding: 14, verticalPadding: 7, cornerRadius: 8))
+                }
+
                 if !model.undatedPosters.isEmpty {
-                    Button(language.tr("从待补录列表选择 (\(model.undatedPosters.count))", "Pick Undated Item (\(model.undatedPosters.count))")) {
+                    Button(language.tr("待补日期 (\(model.undatedPosters.count))", "Pick Undated (\(model.undatedPosters.count))")) {
                         undatedQuery = ""
                         showUndatedPopover = true
                     }
-                    .buttonStyle(ShelfButtonStyle(variant: .primary, horizontalPadding: 14, verticalPadding: 7, cornerRadius: 8))
+                    .buttonStyle(
+                        ShelfButtonStyle(
+                            variant: allDisabled ? .secondary : .primary,
+                            horizontalPadding: 14,
+                            verticalPadding: 7,
+                            cornerRadius: 8
+                        )
+                    )
                     .popover(isPresented: $showUndatedPopover, arrowEdge: .bottom) {
                         undatedPopover(posters: model.undatedPosters)
                     }
                 }
-
-                Button(language.tr("返回海报墙", "Back to Grid")) {
-                    actions.onSwitchToGrid()
-                }
-                .buttonStyle(ShelfButtonStyle(variant: .secondary, horizontalPadding: 14, verticalPadding: 7, cornerRadius: 8))
             }
             .padding(.top, 2)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func triggerScroll(to monthID: String) {
+    private func triggerScroll(to monthID: String, anchor: UnitPoint) {
         scrollToTargetID = monthID
+        scrollTargetAnchor = anchor
         scrollNonce += 1
     }
 }
 
-// MARK: - Gantt Bar Component
+// MARK: - Category Multi-Select Toggle Chip
 
-private struct TimelineBarView: View {
+private struct CategoryToggleChip: View {
+    let category: MediaCategory
+    let count: Int
+    let isSelected: Bool
+    let language: AppLanguage
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        let tint = category.accentColor
+
+        Button(action: action) {
+            HStack(spacing: 5.5) {
+                Image(systemName: category.systemImage)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(isSelected ? tint : Color.secondary.opacity(0.55))
+
+                Text(category.title(in: language))
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(isSelected ? Color.primary : Color.secondary.opacity(0.65))
+
+                if count > 0 {
+                    Text("\(count)")
+                        .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(isSelected ? tint : Color.secondary.opacity(0.5))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(
+                            (isSelected ? tint.opacity(0.15) : Color.primary.opacity(0.05)),
+                            in: Capsule()
+                        )
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(
+                        isSelected
+                            ? tint.opacity(isHovered ? 0.18 : 0.12)
+                            : Color.primary.opacity(isHovered ? 0.065 : 0.03)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(
+                        isSelected
+                            ? tint.opacity(isHovered ? 0.55 : 0.36)
+                            : Color.primary.opacity(isHovered ? 0.14 : 0.08),
+                        lineWidth: isSelected ? 1.0 : 0.75
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(
+            isSelected
+                ? language.tr("点击隐藏「\(category.title(in: language))」", "Click to hide \(category.title(in: language))")
+                : language.tr("点击显示「\(category.title(in: language))」", "Click to show \(category.title(in: language))")
+        )
+    }
+}
+
+// MARK: - Poster-First, Artwork-Infused Timeline Card
+
+private struct TimelineCardView: View {
     let entry: TimelineEntry
     let height: CGFloat
+    let showCategoryGlyph: Bool
     let isSelected: Bool
     let isHovered: Bool
     let language: AppLanguage
@@ -657,49 +893,64 @@ private struct TimelineBarView: View {
     let actions: TimelineActions
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @State private var lastTapAt: Date = .distantPast
 
     var body: some View {
         let poster = entry.poster
-        let tint = poster.status.tintColor
-        let accent = poster.category.accentColor
+        let statusTint = poster.status.tintColor
+        let palette = CoverPalette.forSeed(poster.paletteSeed)
+        let cornerRadius: CGFloat = 13
+        let progressWidth = min(max(entry.actualWidth, 24), entry.width - 14)
 
-        HStack(spacing: 8) {
-            TimelineMiniCover(
-                fileName: poster.coverFileName,
-                category: poster.category,
-                paletteSeed: poster.paletteSeed,
-                width: 24,
-                height: 34
-            )
-            .scaleEffect(isHovered ? 1.07 : 1.0)
-            .shadow(color: .black.opacity(isHovered ? 0.35 : 0.18), radius: isHovered ? 5 : 2, x: 0, y: 1)
+        CoverPreview(fileName: poster.coverFileName) { artwork in
+            HStack(spacing: 11) {
+                TimelineMiniPoster(
+                    image: artwork?.image,
+                    category: poster.category,
+                    paletteSeed: poster.paletteSeed,
+                    width: 38,
+                    height: 56,
+                    cornerRadius: 6.5
+                )
+                .scaleEffect(isHovered ? 1.07 : 1.0)
+                .shadow(
+                    color: .black.opacity(isHovered ? 0.42 : 0.24),
+                    radius: isHovered ? 7 : 3.5,
+                    x: 0,
+                    y: isHovered ? 3 : 1.5
+                )
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 5) {
-                    Text(poster.title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(poster.title)
+                            .font(.system(size: 13, weight: isSelected ? .bold : .semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
 
-                    if poster.rating > 0 && entry.width >= 150 {
-                        HStack(spacing: 1.5) {
-                            Image(systemName: "star.fill")
-                                .font(.system(size: 8.5))
-                                .foregroundStyle(ShelfTheme.starGold)
-                            Text("\(poster.rating)")
-                                .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                                .foregroundStyle(.secondary)
+                        Spacer(minLength: 2)
+
+                        if poster.rating > 0 {
+                            HStack(spacing: 2) {
+                                Image(systemName: "star.fill")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(ShelfTheme.starGold)
+                                Text("\(poster.rating)")
+                                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 5.5)
+                            .padding(.vertical, 1.5)
+                            .background(Color.primary.opacity(0.07), in: Capsule())
                         }
                     }
-                }
 
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(tint)
-                        .frame(width: 5.5, height: 5.5)
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(statusTint)
+                            .frame(width: 6, height: 6)
+                            .shadow(color: statusTint.opacity(entry.isOngoing ? 0.8 : 0.3), radius: entry.isOngoing ? 3.5 : 1)
 
-                    if entry.width >= 132 {
                         Text(
                             TimelineDateFormatter.spanText(
                                 start: entry.startDay,
@@ -707,80 +958,120 @@ private struct TimelineBarView: View {
                                 isOngoing: entry.isOngoing,
                                 durationDays: entry.durationDays,
                                 language: language,
-                                compact: entry.width < 220
+                                compact: true
                             )
                         )
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .monospacedDigit()
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    } else {
-                        Text(poster.category.statusLabel(for: poster.status, in: language))
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
+
+                        if entry.width >= 210 {
+                            Text("·")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.tertiary)
+
+                            Text(
+                                TimelineDateFormatter.durationText(
+                                    days: entry.durationDays,
+                                    isOngoing: entry.isOngoing,
+                                    language: language
+                                )
+                            )
+                            .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                            .foregroundStyle(statusTint.opacity(0.95))
                             .lineLimit(1)
+                        }
+
+                        Spacer(minLength: 0)
+
+                        if showCategoryGlyph {
+                            Image(systemName: poster.category.systemImage)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(poster.category.accentColor.opacity(0.75))
+                        }
                     }
                 }
             }
+            .padding(.leading, 6)
+            .padding(.trailing, 11)
+            .frame(width: entry.width, height: height, alignment: .leading)
+            .background {
+                ZStack(alignment: .bottomLeading) {
+                    // Base adaptive surface
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
 
-            Spacer(minLength: 0)
-
-            if entry.isOngoing {
-                Circle()
-                    .fill(TrackingStatus.active.tintColor)
-                    .frame(width: 7, height: 7)
-                    .shadow(color: TrackingStatus.active.tintColor.opacity(0.65), radius: 4, x: 0, y: 0)
-                    .padding(.trailing, 2)
-            }
-        }
-        .padding(.leading, 5)
-        .padding(.trailing, 8)
-        .frame(width: entry.width, height: height, alignment: .leading)
-        .background {
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(isSelected ? 0.96 : 0.88))
-
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(
+                    // Ambient blurred poster artwork wash
+                    if let backdrop = artwork?.backdrop {
+                        Image(decorative: backdrop, scale: 1)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: entry.width, height: height)
+                            .opacity(
+                                colorScheme == .dark
+                                    ? (isHovered ? 0.36 : 0.24)
+                                    : (isHovered ? 0.22 : 0.14)
+                            )
+                    } else {
                         LinearGradient(
                             colors: [
-                                accent.opacity(isHovered ? 0.22 : (isSelected ? 0.20 : 0.12)),
-                                tint.opacity(isHovered ? 0.14 : (isSelected ? 0.12 : 0.06))
+                                palette.top.swiftUIColor.opacity(colorScheme == .dark ? 0.28 : 0.14),
+                                palette.bottom.swiftUIColor.opacity(colorScheme == .dark ? 0.16 : 0.06)
                             ],
                             startPoint: .leading,
                             endPoint: .trailing
                         )
+                    }
+
+                    // Soft readability veil
+                    LinearGradient(
+                        colors: [
+                            Color(nsColor: .windowBackgroundColor).opacity(colorScheme == .dark ? 0.42 : 0.62),
+                            Color(nsColor: .windowBackgroundColor).opacity(colorScheme == .dark ? 0.24 : 0.46)
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
                     )
 
-                // Left accent stripe
-                UnevenRoundedRectangle(
-                    topLeadingRadius: 10,
-                    bottomLeadingRadius: 10,
-                    bottomTrailingRadius: 0,
-                    topTrailingRadius: 0
-                )
-                .fill(tint.opacity(isSelected || isHovered ? 0.95 : 0.72))
-                .frame(width: 3)
+                    // True-duration subtle bottom accent bar
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [statusTint.opacity(0.85), statusTint.opacity(entry.isOngoing ? 0.95 : 0.45)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: progressWidth, height: 2.5)
+                        .padding(.leading, 7)
+                        .padding(.bottom, 2)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        isSelected
+                            ? Color.accentColor
+                            : (
+                                isHovered
+                                    ? Color.primary.opacity(0.28)
+                                    : Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.10)
+                            ),
+                        lineWidth: isSelected ? 1.8 : (isHovered ? 1.1 : 0.75)
+                    )
+            )
+            .shadow(
+                color: .black.opacity(isHovered ? 0.26 : (isSelected ? 0.20 : (colorScheme == .dark ? 0.22 : 0.08))),
+                radius: isHovered ? 12 : (isSelected ? 8 : 5),
+                x: 0,
+                y: isHovered ? 5 : 2
+            )
+            .scaleEffect(isHovered ? 1.018 : 1.0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isHovered)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isSelected)
         }
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(
-                    isSelected
-                        ? Color.accentColor
-                        : (isHovered ? Color.primary.opacity(0.28) : Color.primary.opacity(0.11)),
-                    lineWidth: isSelected ? 1.8 : (isHovered ? 1.1 : 0.75)
-                )
-        )
-        .shadow(
-            color: .black.opacity(isHovered ? 0.22 : (isSelected ? 0.16 : 0.07)),
-            radius: isHovered ? 10 : (isSelected ? 7 : 3),
-            x: 0,
-            y: isHovered ? 4 : 2
-        )
-        .scaleEffect(isHovered ? 1.02 : 1.0)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: isHovered)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: isSelected)
         .background {
             GeometryReader { geo in
                 Color.clear
@@ -789,7 +1080,7 @@ private struct TimelineBarView: View {
                     }
             }
         }
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .onTapGesture {
             let now = Date()
             if now.timeIntervalSince(lastTapAt) <= 0.32 {
@@ -872,41 +1163,40 @@ private struct TimelineBarView: View {
     }
 }
 
-// MARK: - Compact Mini Cover Thumbnail
+// MARK: - Crisp 2:3 Mini Poster
 
-private struct TimelineMiniCover: View {
-    let fileName: String?
+private struct TimelineMiniPoster: View {
+    let image: CGImage?
     let category: MediaCategory
     let paletteSeed: Int
     let width: CGFloat
     let height: CGFloat
+    let cornerRadius: CGFloat
 
     var body: some View {
         let palette = CoverPalette.forSeed(paletteSeed)
 
-        CoverPreview(fileName: fileName) { artwork in
-            ZStack {
-                if let image = artwork?.image {
-                    Image(decorative: image, scale: 2)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    LinearGradient(
-                        colors: [palette.top.swiftUIColor, palette.bottom.swiftUIColor],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    Image(systemName: category.systemImage)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.85))
-                }
+        ZStack {
+            if let image {
+                Image(decorative: image, scale: 2)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                LinearGradient(
+                    colors: [palette.top.swiftUIColor, palette.bottom.swiftUIColor],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                Image(systemName: category.systemImage)
+                    .font(.system(size: width * 0.36, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
             }
-            .frame(width: width, height: height)
-            .clipShape(RoundedRectangle(cornerRadius: 4.5, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 4.5, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.6)
-            )
         }
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.24), lineWidth: 0.6)
+        )
     }
 }

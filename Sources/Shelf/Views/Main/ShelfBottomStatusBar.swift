@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ShelfBottomStatusBar: View {
     let countText: String
-    let viewMode: LibraryViewMode
+    let isTimeline: Bool
     let language: AppLanguage
     @Binding var posterScale: Double
     @Binding var draggedPosterScale: Double?
@@ -19,7 +19,7 @@ struct ShelfBottomStatusBar: View {
 
             HStack(spacing: 8) {
                 Button {
-                    if viewMode == .timeline {
+                    if isTimeline {
                         timelineZoom = TimelineZoomConfig.zoomOut(from: timelineZoom)
                     } else {
                         posterScale = PosterScaleConfig.zoomOut(from: posterScale)
@@ -33,12 +33,12 @@ struct ShelfBottomStatusBar: View {
                 }
                 .buttonStyle(.plain)
                 .help(
-                    viewMode == .timeline
+                    isTimeline
                         ? language.tr("拉远时间轴 (⌘-)", "Zoom out timeline (⌘-)")
                         : language.tr("缩小海报 (⌘-)", "Zoom out (⌘-)")
                 )
 
-                if viewMode == .timeline {
+                if isTimeline {
                     Slider(
                         value: Binding(
                             get: { draggedTimelineZoom ?? timelineZoom },
@@ -85,7 +85,7 @@ struct ShelfBottomStatusBar: View {
                 }
 
                 Button {
-                    if viewMode == .timeline {
+                    if isTimeline {
                         timelineZoom = TimelineZoomConfig.zoomIn(from: timelineZoom)
                     } else {
                         posterScale = PosterScaleConfig.zoomIn(from: posterScale)
@@ -99,7 +99,7 @@ struct ShelfBottomStatusBar: View {
                 }
                 .buttonStyle(.plain)
                 .help(
-                    viewMode == .timeline
+                    isTimeline
                         ? language.tr("拉近时间轴 (⌘+)", "Zoom in timeline (⌘+)")
                         : language.tr("放大海报 (⌘+)", "Zoom in (⌘+)")
                 )

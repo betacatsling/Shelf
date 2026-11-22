@@ -235,13 +235,15 @@ enum SidebarDestination: Hashable {
     case all
     case category(MediaCategory)
     case fiveStar
+    case timeline
 
     static let allDestinations: [SidebarDestination] = [
         .all,
         .category(.game),
         .category(.novel),
         .category(.video),
-        .fiveStar
+        .fiveStar,
+        .timeline
     ]
 
     var stableID: String {
@@ -249,6 +251,7 @@ enum SidebarDestination: Hashable {
         case .all: return "all"
         case .category(let cat): return "category:\(cat.rawValue)"
         case .fiveStar: return "fiveStar"
+        case .timeline: return "timeline"
         }
     }
 
@@ -257,6 +260,7 @@ enum SidebarDestination: Hashable {
         case .all: return lang.tr("全部", "All")
         case .category(let cat): return cat.title(in: lang)
         case .fiveStar: return lang.tr("五星作品", "5-Star")
+        case .timeline: return lang.tr("时间线", "Timeline")
         }
     }
 
@@ -265,6 +269,7 @@ enum SidebarDestination: Hashable {
         case .all: return "square.grid.2x2.fill"
         case .category(let cat): return cat.systemImage
         case .fiveStar: return "star.fill"
+        case .timeline: return "calendar.day.timeline.left"
         }
     }
 
@@ -273,6 +278,7 @@ enum SidebarDestination: Hashable {
         case .all: return .accentColor
         case .category(let cat): return cat.accentColor
         case .fiveStar: return ShelfTheme.starGold
+        case .timeline: return Color(red: 0.44, green: 0.46, blue: 0.96)
         }
     }
 
@@ -280,32 +286,15 @@ enum SidebarDestination: Hashable {
         if case .category(let cat) = self { return cat }
         return nil
     }
+
+    var isTimeline: Bool {
+        self == .timeline
+    }
 }
 
 enum StatusFilterOption: Hashable {
     case allShelves
     case single(TrackingStatus)
-}
-
-enum LibraryViewMode: String, CaseIterable, Identifiable {
-    case grid = "grid"
-    case timeline = "timeline"
-
-    var id: String { rawValue }
-
-    func title(in lang: AppLanguage) -> String {
-        switch self {
-        case .grid: return lang.tr("海报墙", "Grid")
-        case .timeline: return lang.tr("时间线", "Timeline")
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .grid: return "square.grid.2x2"
-        case .timeline: return "calendar.day.timeline.left"
-        }
-    }
 }
 
 enum LibrarySortField: String, CaseIterable, Identifiable {
