@@ -33,9 +33,9 @@ struct TimelineView: View {
     @State private var scrollTargetAnchor: UnitPoint = .center
     @State private var scrollNonce = 0
     @State private var hasPerformedInitialScroll = false
-    @State private var pinchStartZoom: Double?
+    @State private var livePinchZoom: Double?
 
-    private let rulerHeight: CGFloat = 52
+    private let rulerHeight: CGFloat = 54
     private let groupHeaderHeight: CGFloat = 34
     private let laneHeight: CGFloat = 68
     private let laneSpacing: CGFloat = 12
@@ -43,8 +43,12 @@ struct TimelineView: View {
     private let groupBottomPadding: CGFloat = 22
     private let canvasCoordinateSpace = "shelf.timelineCanvas"
 
+    private var activeZoom: Double {
+        livePinchZoom ?? effectiveZoom
+    }
+
     private var pointsPerDay: CGFloat {
-        TimelineZoomConfig.pointsPerDay(for: effectiveZoom)
+        TimelineZoomConfig.pointsPerDay(for: activeZoom)
     }
 
     private var layout: TimelineLayoutModel {
@@ -59,8 +63,8 @@ struct TimelineView: View {
 
     private var activePreset: TimelineZoomConfig.Preset? {
         TimelineZoomConfig.Preset.allCases.min {
-            abs($0.zoomValue - effectiveZoom) < abs($1.zoomValue - effectiveZoom)
-        }.flatMap { abs($0.zoomValue - effectiveZoom) < 0.08 ? $0 : nil }
+            abs($0.zoomValue - activeZoom) < abs($1.zoomValue - activeZoom)
+        }.flatMap { abs($0.zoomValue - activeZoom) < 0.08 ? $0 : nil }
     }
 
     var body: some View {
@@ -114,7 +118,6 @@ struct TimelineView: View {
                 HStack(spacing: 8) {
                     Divider().frame(height: 16).opacity(0.55)
                     statusFilterMenu
-                    yearJumpPills(model: model)
                     undatedButton(model: model, compact: false)
                 }
 
@@ -136,9 +139,8 @@ struct TimelineView: View {
                 ForEach(TimelineZoomConfig.Preset.allCases) { preset in
                     let isSelected = activePreset == preset
                     Button {
-                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
-                            zoom = preset.zoomValue
-                        }
+                        hoveredEntry = nil
+                        zoom = preset.zoomValue
                     } label: {
                         Text(preset.title(in: language))
                             .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
@@ -194,31 +196,6 @@ struct TimelineView: View {
         .padding(.horizontal, ShelfTheme.horizontalPadding)
         .padding(.vertical, 9)
         .background(Color(nsColor: .windowBackgroundColor))
-    }
-
-    @ViewBuilder
-    private func yearJumpPills(model: TimelineLayoutModel) -> some View {
-        if model.yearJumps.count > 1 {
-            HStack(spacing: 3) {
-                ForEach(model.yearJumps) { jump in
-                    Button {
-                        triggerScroll(to: jump.targetMonthID, anchor: .leading)
-                    } label: {
-                        Text(String(jump.year))
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3.5)
-                            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .help(language.tr("跳转到 \(jump.year) 年（\(jump.itemCount) 项）", "Jump to \(jump.year) (\(jump.itemCount))"))
-                }
-            }
-            .fixedSize()
-        }
     }
 
     @ViewBuilder
@@ -330,12 +307,6 @@ struct TimelineView: View {
                 ScrollViewReader { scrollProxy in
                     ScrollView(.horizontal, showsIndicators: true) {
                         VStack(alignment: .leading, spacing: 0) {
-                            calendarRuler(model: model)
-                                .frame(width: model.totalWidth, height: rulerHeight, alignment: .topLeading)
-
-                            Divider()
-                                .opacity(0.75)
-
                             ScrollView(.vertical, showsIndicators: true) {
                                 ZStack(alignment: .topLeading) {
                                     // Background tap to deselect
@@ -354,6 +325,31 @@ struct TimelineView: View {
                                 .frame(width: model.totalWidth, height: contentHeight, alignment: .topLeading)
                             }
                             .frame(width: model.totalWidth)
+                            .frame(maxHeight: .infinity)
+
+                            Divider()
+                                .opacity(0.75)
+
+                            bottomTimeAxis(model: model)
+                                .frame(width: model.totalWidth, height: rulerHeight, alignment: .topLeading)
+                                .background(
+                                    TimelineZoomBridge(
+                                        effectiveZoom: activeZoom,
+                                        pointsPerDay: pointsPerDay,
+                                        totalWidth: model.totalWidth,
+                                        leadingPadding: TimelineLayoutModel.leadingCanvasPadding,
+                                        onPinchBegin: {
+                                            hoveredEntry = nil
+                                        },
+                                        onPinchChanged: { nextZoom in
+                                            livePinchZoom = nextZoom
+                                        },
+                                        onPinchEnded: { finalZoom in
+                                            zoom = finalZoom
+                                            livePinchZoom = nil
+                                        }
+                                    )
+                                )
                         }
                     }
                     .onAppear {
@@ -372,24 +368,6 @@ struct TimelineView: View {
                         }
                     }
                 }
-                .simultaneousGesture(
-                    MagnifyGesture()
-                        .onChanged { value in
-                            if hoveredEntry != nil {
-                                hoveredEntry = nil
-                            }
-                            if pinchStartZoom == nil {
-                                pinchStartZoom = zoom
-                            }
-                            if let base = pinchStartZoom {
-                                let delta = log2(Double(max(0.25, value.magnification))) * 0.38
-                                zoom = min(max(base + delta, TimelineZoomConfig.minZoom), TimelineZoomConfig.maxZoom)
-                            }
-                        }
-                        .onEnded { _ in
-                            pinchStartZoom = nil
-                        }
-                )
 
                 // Floating enlarged poster preview on hover
                 if let hovered = hoveredEntry, hoveredAnchorRect.width > 0 {
@@ -419,9 +397,9 @@ struct TimelineView: View {
         }
     }
 
-    // MARK: - Editorial Calendar Ruler
+    // MARK: - Bottom Time Axis Ruler
 
-    private func calendarRuler(model: TimelineLayoutModel) -> some View {
+    private func bottomTimeAxis(model: TimelineLayoutModel) -> some View {
         ZStack(alignment: .topLeading) {
             Color(nsColor: .windowBackgroundColor)
 
@@ -431,15 +409,17 @@ struct TimelineView: View {
                     .frame(width: TimelineLayoutModel.leadingCanvasPadding, height: rulerHeight)
 
                 ForEach(Array(model.monthTicks.enumerated()), id: \.element.id) { index, tick in
-                    monthRulerCell(tick: tick, showYear: tick.isYearStart || index == 0)
+                    bottomMonthAxisCell(tick: tick, showYearBelow: tick.isYearStart || index == 0)
                         .frame(width: tick.width, height: rulerHeight, alignment: .topLeading)
                         .id(tick.id)
                 }
             }
 
-            // Sleek floating Today capsule indicator
+            // Sleek Today indicator anchored cleanly on the bottom time axis
             VStack(spacing: 0) {
-                Spacer(minLength: 0)
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(width: 1.5, height: 8)
                 Text(language.tr("今天", "Today"))
                     .font(.system(size: 9.5, weight: .bold))
                     .foregroundStyle(.white)
@@ -447,71 +427,82 @@ struct TimelineView: View {
                     .padding(.vertical, 2.5)
                     .background(Color.accentColor, in: Capsule())
                     .shadow(color: Color.accentColor.opacity(0.4), radius: 5, x: 0, y: 1.5)
-                    .padding(.bottom, 4)
+                Spacer(minLength: 0)
             }
             .position(x: model.todayX, y: rulerHeight / 2)
             .allowsHitTesting(false)
         }
     }
 
-    private func monthRulerCell(tick: TimelineMonthTick, showYear: Bool) -> some View {
+    private func bottomMonthAxisCell(tick: TimelineMonthTick, showYearBelow: Bool) -> some View {
         let monthTitle = formattedMonthLabel(tick.month)
         let showDayTicks = pointsPerDay >= 5.5
         let dayStep = pointsPerDay >= 15 ? 1 : (pointsPerDay >= 9 ? 5 : 10)
+        let showInlineYear = tick.width >= 96
 
         return ZStack(alignment: .topLeading) {
             if tick.isCurrentMonth {
                 Color.accentColor.opacity(0.045)
             }
 
-            // Hairline vertical boundary
+            // Upward-facing hairline boundary tick
             Rectangle()
-                .fill(Color.primary.opacity(tick.isYearStart ? 0.18 : 0.065))
-                .frame(width: tick.isYearStart ? 1 : 0.6, height: rulerHeight)
+                .fill(Color.primary.opacity(tick.isYearStart ? 0.24 : 0.10))
+                .frame(width: tick.isYearStart ? 1 : 0.6, height: tick.isYearStart ? rulerHeight : 14)
+
+            if showDayTicks {
+                ZStack(alignment: .topLeading) {
+                    ForEach(Array(stride(from: dayStep == 1 ? 1 : dayStep, through: tick.dayCount, by: dayStep)), id: \.self) { day in
+                        let dayOffsetX = CGFloat(day - 1) * pointsPerDay
+                        if dayOffsetX + 16 <= tick.width {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Rectangle()
+                                    .fill(Color.primary.opacity(0.14))
+                                    .frame(width: 0.6, height: 5)
+                                Text("\(day)")
+                                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .offset(x: dayOffsetX + 2)
+                        }
+                    }
+                }
+                .frame(height: 18, alignment: .topLeading)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 5) {
-                    if showYear {
-                        Text(String(tick.year))
-                            .font(.system(size: 10.5, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(.primary.opacity(0.75))
-                            .tracking(0.4)
-                    }
+                Spacer(minLength: 0)
 
-                    if tick.width >= 32 {
+                if showInlineYear {
+                    Text(formattedYearMonthLabel(year: tick.year, month: tick.month))
+                        .font(.system(size: 12, weight: tick.isCurrentMonth ? .bold : .semibold))
+                        .foregroundStyle(tick.isCurrentMonth ? Color.accentColor : .primary.opacity(0.86))
+                        .lineLimit(1)
+                } else {
+                    if tick.width >= 30 {
                         Text(monthTitle)
-                            .font(.system(size: 12, weight: tick.isCurrentMonth ? .bold : (tick.isYearStart ? .semibold : .medium)))
+                            .font(.system(size: 11.5, weight: tick.isCurrentMonth ? .bold : (tick.isYearStart ? .semibold : .medium)))
                             .foregroundStyle(tick.isCurrentMonth ? Color.accentColor : (tick.isYearStart ? .primary : .secondary))
                             .lineLimit(1)
                     }
-                }
-                .padding(.leading, 8)
-                .padding(.top, 9)
 
-                Spacer(minLength: 0)
-
-                if showDayTicks {
-                    ZStack(alignment: .bottomLeading) {
-                        ForEach(Array(stride(from: dayStep == 1 ? 1 : dayStep, through: tick.dayCount, by: dayStep)), id: \.self) { day in
-                            let dayOffsetX = CGFloat(day - 1) * pointsPerDay
-                            if dayOffsetX + 16 <= tick.width {
-                                VStack(alignment: .leading, spacing: 1.5) {
-                                    Text("\(day)")
-                                        .font(.system(size: 9, weight: .medium, design: .rounded))
-                                        .monospacedDigit()
-                                        .foregroundStyle(.tertiary)
-                                    Rectangle()
-                                        .fill(Color.primary.opacity(0.12))
-                                        .frame(width: 0.6, height: 5)
-                                }
-                                .offset(x: dayOffsetX + 3)
-                            }
-                        }
+                    if showYearBelow {
+                        Text(String(tick.year))
+                            .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(.primary.opacity(0.68))
+                            .tracking(0.4)
+                            .lineLimit(1)
+                    } else {
+                        // Keep month baseline aligned cleanly across the year
+                        Text(" ")
+                            .font(.system(size: 10.5))
                     }
-                    .frame(height: 18, alignment: .bottomLeading)
                 }
             }
+            .padding(.leading, 7)
+            .padding(.bottom, 7)
         }
         .clipped()
     }
@@ -522,6 +513,13 @@ struct TimelineView: View {
         }
         let names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
         return (1...12).contains(month) ? names[month - 1] : "\(month)"
+    }
+
+    private func formattedYearMonthLabel(year: Int, month: Int) -> String {
+        if language == .zh {
+            return "\(year)年 \(month)月"
+        }
+        return "\(formattedMonthLabel(month)) \(year)"
     }
 
     // MARK: - Subtle Canvas Hairlines & Today Marker
@@ -550,9 +548,9 @@ struct TimelineView: View {
             .fill(
                 LinearGradient(
                     colors: [
-                        Color.accentColor.opacity(0.75),
-                        Color.accentColor.opacity(0.22),
-                        Color.accentColor.opacity(0.06)
+                        Color.accentColor.opacity(0.08),
+                        Color.accentColor.opacity(0.28),
+                        Color.accentColor.opacity(0.80)
                     ],
                     startPoint: .top,
                     endPoint: .bottom
