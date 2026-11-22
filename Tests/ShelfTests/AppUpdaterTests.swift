@@ -330,4 +330,47 @@ struct AppUpdaterTests {
         #expect(AppUpdater.selectMacOSAsset(from: [intelInstaller], arch: "arm64") == nil)
         #expect(AppUpdater.selectMacOSAsset(from: [intelInstaller], arch: "x86_64")?.name == intelInstaller.name)
     }
+
+    @MainActor
+    @Test func testAutomaticPeriodicChecksDiscoverNewRelease() async {
+        final class Counter: @unchecked Sendable {
+            var count = 0
+        }
+        let counter = Counter()
+        let updater = AppUpdater(
+            currentVersionString: "1.3.1",
+            initialCheckDelay: .milliseconds(10),
+            automaticCheckInterval: .milliseconds(30),
+            releaseFetcher: {
+                counter.count += 1
+                if counter.count == 1 {
+                    return GitHubRelease(
+                        tag_name: "v1.3.1",
+                        html_url: "https://github.com/betacatsling/Shelf/releases/tag/v1.3.1",
+                        assets: []
+                    )
+                }
+                return GitHubRelease(
+                    tag_name: "v1.3.2",
+                    html_url: "https://github.com/betacatsling/Shelf/releases/tag/v1.3.2",
+                    assets: [
+                        .init(
+                            name: "Shelf-v1.3.2-macOS-arm64.dmg",
+                            browser_download_url: "https://github.com/betacatsling/Shelf/releases/download/v1.3.2/Shelf-v1.3.2-macOS-arm64.dmg"
+                        )
+                    ]
+                )
+            }
+        )
+
+        updater.startAutomaticChecksIfNeeded()
+
+        for _ in 0..<40 {
+            if updater.availableUpdate?.displayTag == "v1.3.2" { break }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+
+        #expect(counter.count >= 2)
+        #expect(updater.availableUpdate?.displayTag == "v1.3.2")
+    }
 }

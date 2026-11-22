@@ -21,6 +21,9 @@ final class AppUpdater {
 
     nonisolated static let latestReleaseAPIURL = GitHubReleaseClient.latestReleaseAPIURL
     nonisolated static let releasesPageURL = GitHubReleaseClient.releasesPageURL
+    nonisolated static let defaultInitialCheckDelay: Duration = .seconds(1.5)
+    nonisolated static let defaultAutomaticCheckInterval: Duration = .seconds(5 * 60)
+    nonisolated static let defaultActivationCheckMinInterval: TimeInterval = 5 * 60
 
     #if arch(arm64)
     nonisolated static let currentArch = "arm64"
@@ -44,6 +47,9 @@ final class AppUpdater {
     @ObservationIgnored private let openURL: URLOpener
     @ObservationIgnored private let terminateApp: AppTerminator
     @ObservationIgnored private let downloadsDirectory: URL
+    @ObservationIgnored private let initialCheckDelay: Duration
+    @ObservationIgnored private let automaticCheckInterval: Duration
+    @ObservationIgnored private let activationCheckMinInterval: TimeInterval
 
     @ObservationIgnored private var hasStartedAutomaticChecks = false
     @ObservationIgnored private var isChecking = false
@@ -57,6 +63,9 @@ final class AppUpdater {
         bundleURL: URL = Bundle.main.bundleURL,
         expectedBundleIdentifier: String? = Bundle.main.bundleIdentifier,
         downloadsDirectory: URL? = nil,
+        initialCheckDelay: Duration = AppUpdater.defaultInitialCheckDelay,
+        automaticCheckInterval: Duration = AppUpdater.defaultAutomaticCheckInterval,
+        activationCheckMinInterval: TimeInterval = AppUpdater.defaultActivationCheckMinInterval,
         releaseFetcher: ReleaseFetcher? = nil,
         assetDownloader: AssetDownloader? = nil,
         openURL: URLOpener? = nil,
@@ -74,6 +83,9 @@ final class AppUpdater {
         self.downloadsDirectory = downloadsDirectory
             ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true)
+        self.initialCheckDelay = initialCheckDelay
+        self.automaticCheckInterval = automaticCheckInterval
+        self.activationCheckMinInterval = activationCheckMinInterval
         self.releaseFetcher = releaseFetcher ?? {
             try await GitHubReleaseClient.fetchLatestRelease(currentVersion: resolvedVersion)
         }
@@ -127,12 +139,14 @@ final class AppUpdater {
         guard !hasStartedAutomaticChecks else { return }
         hasStartedAutomaticChecks = true
 
+        let initialDelay = initialCheckDelay
+        let interval = automaticCheckInterval
         periodicCheckTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1.5))
+            try? await Task.sleep(for: initialDelay)
             while !Task.isCancelled {
                 guard let self else { break }
                 await self.checkForUpdatesNow(userInitiated: false)
-                try? await Task.sleep(for: .seconds(6 * 3600))
+                try? await Task.sleep(for: interval)
             }
         }
 
@@ -142,11 +156,9 @@ final class AppUpdater {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self,
-                      let lastCheckedAt = self.lastCheckedAt,
-                      Date().timeIntervalSince(lastCheckedAt) >= 4 * 3600,
-                      !self.isBusy
-                else {
+                guard let self, !self.isBusy else { return }
+                if let lastCheckedAt = self.lastCheckedAt,
+                   Date().timeIntervalSince(lastCheckedAt) < self.activationCheckMinInterval {
                     return
                 }
                 await self.checkForUpdatesNow(userInitiated: false)

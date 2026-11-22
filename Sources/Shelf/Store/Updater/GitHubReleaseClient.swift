@@ -149,6 +149,18 @@ enum GitHubReleaseClient {
         ".sha256", ".sha512", ".sig", ".asc", ".blockmap", ".json", ".txt"
     ]
 
+    private actor ETagCache {
+        private var cached: (etag: String, release: GitHubRelease)?
+
+        func currentETag() -> String? { cached?.etag }
+        func cachedRelease() -> GitHubRelease? { cached?.release }
+        func store(etag: String, release: GitHubRelease) {
+            cached = (etag, release)
+        }
+    }
+
+    private static let etagCache = ETagCache()
+
     private static let apiSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -166,10 +178,16 @@ enum GitHubReleaseClient {
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
         request.setValue("Shelf-macOS/\(currentVersion.description)", forHTTPHeaderField: "User-Agent")
+        if let etag = await etagCache.currentETag() {
+            request.setValue(etag, forHTTPHeaderField: "If-None-Match")
+        }
 
         let (data, response) = try await apiSession.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw UpdaterError.networkFailed
+        }
+        if http.statusCode == 304, let cached = await etagCache.cachedRelease() {
+            return cached
         }
         if http.statusCode == 404 {
             throw UpdaterError.noReleasesFound
@@ -179,7 +197,11 @@ enum GitHubReleaseClient {
                 && http.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0"
             throw UpdaterError.httpError(statusCode: http.statusCode, rateLimited: rateLimited)
         }
-        return try JSONDecoder().decode(GitHubRelease.self, from: data)
+        let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+        if let etag = http.value(forHTTPHeaderField: "ETag"), !etag.isEmpty {
+            await etagCache.store(etag: etag, release: release)
+        }
+        return release
     }
 
     static func selectMacOSAsset(from assets: [GitHubRelease.Asset], arch: String) -> ReleaseAsset? {
