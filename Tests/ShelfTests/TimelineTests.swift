@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Testing
 @testable import Shelf
 
@@ -96,6 +96,30 @@ struct TimelineTests {
         store.updateTimelineDates(for: item.id, startedAt: nil, finishedAt: nil)
         #expect(store.item(withID: item.id)?.startedAt == nil)
         #expect(store.item(withID: item.id)?.finishedAt == nil)
+    }
+
+    @MainActor
+    @Test func presetZoomKeepsItsDateWhenIntermediateScrollCorrectionsCoalesce() async {
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 300))
+        scroll.documentView = NSView(frame: NSRect(x: 0, y: 0, width: 9000, height: 300))
+        let bridge = TimelineZoomBridge.Coordinator()
+        bridge.scrollView = scroll
+        bridge.totalWidth = 9000
+        bridge.leadingPadding = 28
+        scroll.contentView.setBoundsOrigin(NSPoint(x: 800, y: 0))
+        let center = scroll.contentView.bounds.width / 2
+        let day = (800 + center - bridge.leadingPadding) / 2
+
+        bridge.syncZoomState(effectiveZoom: 0.1, pointsPerDay: 2, animatingPreset: false)
+        bridge.syncZoomState(effectiveZoom: 0.3, pointsPerDay: 4, animatingPreset: true)
+        bridge.syncZoomState(effectiveZoom: 0.4, pointsPerDay: 5, animatingPreset: true)
+        bridge.syncZoomState(effectiveZoom: 0.5, pointsPerDay: 6, animatingPreset: false)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+
+        let finalCenter = scroll.contentView.bounds.origin.x + center
+        #expect(abs(finalCenter - (bridge.leadingPadding + day * 6)) < 1)
     }
 
     @Test func testTimelineLayoutLanePackingAvoidsVisualOverlapAndGroupsCategories() {
@@ -245,5 +269,8 @@ struct TimelineTests {
         )
         #expect(allCats.scheduledCount == 2)
         #expect(allCats.yearJumps.map(\.year) == [2025, 2026])
+        #expect(allCats.tick(atX: allCats.todayX)?.isCurrentMonth == true)
+        #expect(allCats.yearStartTick(forYear: 2026)?.month == 1)
+        #expect(allCats.nextYearStartTick(afterYear: 2025)?.year == 2026)
     }
 }

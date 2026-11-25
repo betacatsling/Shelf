@@ -12,6 +12,7 @@ struct ItemEditorSheet: View {
     let onSave: (MediaItem) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var title: String = ""
     @State private var titleEN: String = ""
@@ -27,6 +28,7 @@ struct ItemEditorSheet: View {
     @State private var paletteSeed: Int = Int.random(in: 0..<1000)
     @State private var coverController = CoverImportController()
     @State private var showCoverPickerSheet = false
+    @State private var isPosterHovered = false
     @FocusState private var focusedField: FocusField?
 
     private enum FocusField {
@@ -76,16 +78,16 @@ struct ItemEditorSheet: View {
             .padding(.top, 20)
             .padding(.bottom, 14)
 
-            Divider()
+            ShelfHairline()
 
             HStack(alignment: .top, spacing: 24) {
-                posterColumn.frame(width: 192)
+                posterColumn.frame(width: 184)
                 formColumn.frame(maxWidth: .infinity)
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
 
-            Divider()
+            ShelfHairline()
 
             SheetFooterBar(
                 errorMessage: coverController.errorMessage,
@@ -152,19 +154,44 @@ struct ItemEditorSheet: View {
 
     private var posterColumn: some View {
         VStack(spacing: 10) {
-            CoverDropPreviewView(
-                coverFileName: coverController.coverFileName,
-                title: previewDisplayTitle,
-                category: category,
-                subtag: selectedTags.first ?? "",
-                paletteSeed: paletteSeed,
-                language: language,
-                width: 164,
-                height: 246,
-                isDropTargeted: coverController.isDropTargeted,
-                isLoading: coverController.isLoading,
-                dropPrompt: language.tr("松开设为封面", "Drop to Set Cover")
-            )
+            ZStack(alignment: .bottomTrailing) {
+                CoverDropPreviewView(
+                    coverFileName: coverController.coverFileName,
+                    title: previewDisplayTitle,
+                    category: category,
+                    subtag: selectedTags.first ?? "",
+                    paletteSeed: paletteSeed,
+                    language: language,
+                    width: 164,
+                    height: 246,
+                    isDropTargeted: coverController.isDropTargeted,
+                    isLoading: coverController.isLoading,
+                    dropPrompt: language.tr("松开设为封面", "Drop to Set Cover")
+                )
+
+                if isPosterHovered && !coverController.isDropTargeted && !coverController.isLoading {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 26, height: 26)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .background(Color.black.opacity(0.45), in: Circle())
+                        .overlay(Circle().strokeBorder(Color.white.opacity(0.28), lineWidth: 0.7))
+                        .padding(8)
+                        .transition(.scale(scale: 0.85).combined(with: .opacity))
+                        .allowsHitTesting(false)
+                }
+            }
+            .scaleEffect(!reduceMotion && isPosterHovered ? 1.02 : 1.0)
+            .animation(reduceMotion ? nil : ShelfMotion.micro, value: isPosterHovered)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .onTapGesture {
+                coverController.errorMessage = nil
+                coverController.cancelImport()
+                showCoverPickerSheet = true
+            }
+            .onHover { isPosterHovered = $0 }
+            .help(language.tr("点击在线搜索封面，或拖入本地/网页图片", "Click to search covers, or drop an image here"))
             .onDrop(of: [.fileURL, .image, .url], isTargeted: $coverController.isDropTargeted) { providers in
                 coverController.handleDrop(providers: providers, language: language)
             }
@@ -175,7 +202,7 @@ struct ItemEditorSheet: View {
                 showCoverPickerSheet = true
             } label: {
                 Label(
-                    language.tr("在线搜索 / 更换封面…", "Search / Change Cover…"),
+                    language.tr("搜索封面…", "Search Cover…"),
                     systemImage: "magnifyingglass"
                 )
                 .font(.system(size: 11.5, weight: .semibold))
@@ -196,7 +223,7 @@ struct ItemEditorSheet: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "folder")
-                        Text(language.tr("本地图片", "Local")).lineLimit(1)
+                        Text(language.tr("本地", "Local")).lineLimit(1)
                     }
                     .font(.system(size: 11.5, weight: .medium))
                 }
@@ -215,7 +242,7 @@ struct ItemEditorSheet: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "doc.on.clipboard")
-                        Text(language.tr("粘贴图片", "Paste")).lineLimit(1)
+                        Text(language.tr("粘贴", "Paste")).lineLimit(1)
                     }
                     .font(.system(size: 11.5, weight: .medium))
                 }
@@ -235,7 +262,7 @@ struct ItemEditorSheet: View {
                 Button {
                     coverController.resetToDefaultCover()
                 } label: {
-                    Label(language.tr("恢复默认封面", "Reset Default Cover"), systemImage: "arrow.uturn.backward")
+                    Label(language.tr("恢复默认封面", "Reset Cover"), systemImage: "arrow.uturn.backward")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .buttonStyle(ShelfButtonStyle(variant: .subtle, horizontalPadding: 10, verticalPadding: 4, cornerRadius: 6))
@@ -243,7 +270,7 @@ struct ItemEditorSheet: View {
                 Button {
                     paletteSeed = Int.random(in: 0..<1000)
                 } label: {
-                    Label(language.tr("换个封面配色", "Shuffle Palette"), systemImage: "paintpalette")
+                    Label(language.tr("换个配色", "Shuffle Palette"), systemImage: "paintpalette")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .buttonStyle(ShelfButtonStyle(variant: .subtle, horizontalPadding: 10, verticalPadding: 4, cornerRadius: 6))
@@ -360,6 +387,8 @@ struct ItemEditorSheet: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .animation(reduceMotion ? nil : ShelfMotion.control, value: hasStartedAt)
+            .animation(reduceMotion ? nil : ShelfMotion.control, value: hasFinishedAt)
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(language.tr("随笔与感想（可选）", "Notes & Thoughts (Optional)"))

@@ -1,20 +1,24 @@
 import AppKit
+import QuartzCore
 
 @MainActor
 final class ShelfSectionHeaderView: NSView {
+    private static let reflowAnimationKey = "sectionReflow"
     private let toggleContainer = NSView()
+    private let chevronContainer = NSView()
     private let chevronImageView = NSImageView()
     private let dotLayer = CALayer()
     private let titleLabel = NSTextField(labelWithString: "")
-    private let countBadgeContainer = NSView()
     private let countLabel = NSTextField(labelWithString: "")
     private let dividerLine = NSView()
     private let addButton = HeaderPlusButton()
 
     private var onToggle: (() -> Void)?
     private var isToggleHovered = false
+    private var isCollapsedState: Bool?
     private var toggleTrackingArea: NSTrackingArea?
     private var trackedToggleRect: NSRect = .zero
+    private var lastChevronRect: NSRect = .zero
     private var topOffset: CGFloat = 6
 
     override var isFlipped: Bool { true }
@@ -32,10 +36,31 @@ final class ShelfSectionHeaderView: NSView {
     }
 
     func recycle() {
+        cancelReflowAnimation()
         isToggleHovered = false
+        isCollapsedState = nil
         onToggle = nil
         addButton.recycle()
-        refreshDynamicColors()
+        refreshDynamicColors(animated: false)
+    }
+
+    func animateReflow(verticalOffset: CGFloat) {
+        guard let layer else { return }
+        let startTransform: CATransform3D
+        if layer.animation(forKey: Self.reflowAnimationKey) != nil,
+           let current = layer.presentation()?.transform {
+            startTransform = CATransform3DTranslate(current, 0, verticalOffset, 0)
+        } else {
+            startTransform = CATransform3DMakeTranslation(0, verticalOffset, 0)
+        }
+        let spring = ShelfMotion.gridReflow(keyPath: "transform")
+        spring.fromValue = NSValue(caTransform3D: startTransform)
+        spring.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+        layer.add(spring, forKey: Self.reflowAnimationKey)
+    }
+
+    func cancelReflowAnimation() {
+        layer?.removeAnimation(forKey: Self.reflowAnimationKey)
     }
 
     private func setupViews() {
@@ -44,33 +69,34 @@ final class ShelfSectionHeaderView: NSView {
         toggleContainer.layer?.cornerCurve = .continuous
         addSubview(toggleContainer)
 
+        chevronContainer.wantsLayer = true
+        toggleContainer.addSubview(chevronContainer)
+
+        let cfg = NSImage.SymbolConfiguration(pointSize: 9.5, weight: .bold)
+        chevronImageView.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg)
         chevronImageView.imageScaling = .scaleProportionallyDown
         chevronImageView.contentTintColor = .secondaryLabelColor
-        toggleContainer.addSubview(chevronImageView)
+        chevronContainer.addSubview(chevronImageView)
 
-        dotLayer.cornerRadius = 4
+        dotLayer.cornerRadius = 3.5
         toggleContainer.layer?.addSublayer(dotLayer)
 
-        titleLabel.font = .systemFont(ofSize: 14, weight: .bold)
+        titleLabel.font = .systemFont(ofSize: 13.5, weight: .semibold)
         titleLabel.textColor = .labelColor.withAlphaComponent(0.92)
         titleLabel.lineBreakMode = .byTruncatingTail
         toggleContainer.addSubview(titleLabel)
 
-        countBadgeContainer.wantsLayer = true
-        countBadgeContainer.layer?.cornerRadius = 8.5
-        countBadgeContainer.layer?.cornerCurve = .continuous
-        toggleContainer.addSubview(countBadgeContainer)
-
-        countLabel.font = .monospacedDigitSystemFont(ofSize: 11.5, weight: .semibold)
-        countLabel.textColor = .secondaryLabelColor
-        countLabel.alignment = .center
-        countBadgeContainer.addSubview(countLabel)
+        countLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        countLabel.textColor = .tertiaryLabelColor
+        countLabel.alignment = .left
+        toggleContainer.addSubview(countLabel)
 
         dividerLine.wantsLayer = true
         addSubview(dividerLine)
 
         addSubview(addButton)
-        refreshDynamicColors()
+        refreshDynamicColors(animated: false)
     }
 
     func configure(
@@ -83,10 +109,9 @@ final class ShelfSectionHeaderView: NSView {
         self.onToggle = onToggleCollapse
         self.topOffset = isFirstSection ? 10 : 6
 
-        let symbolName = section.isCollapsed ? "chevron.right" : "chevron.down"
-        let cfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .bold)
-        chevronImageView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
-            .withSymbolConfiguration(cfg)
+        let collapsedChanged = isCollapsedState != nil && isCollapsedState != section.isCollapsed
+        isCollapsedState = section.isCollapsed
+        updateChevronRotation(collapsed: section.isCollapsed, animated: collapsedChanged && window != nil)
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -107,6 +132,33 @@ final class ShelfSectionHeaderView: NSView {
         needsLayout = true
     }
 
+    private func updateChevronRotation(collapsed: Bool, animated: Bool) {
+        guard let layer = chevronContainer.layer else { return }
+        let angle: CGFloat = collapsed ? 0 : (.pi * 0.5)
+        let w = chevronContainer.bounds.width
+        let h = chevronContainer.bounds.height
+        var target = CATransform3DIdentity
+        if angle != 0 {
+            target = CATransform3DTranslate(target, w * 0.5, h * 0.5, 0)
+            target = CATransform3DRotate(target, angle, 0, 0, 1)
+            target = CATransform3DTranslate(target, -w * 0.5, -h * 0.5, 0)
+        }
+        let current = (layer.animation(forKey: "chevronRotate") != nil
+                       ? layer.presentation()?.transform : nil) ?? layer.transform
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.transform = target
+        if animated && !CATransform3DEqualToTransform(current, target) {
+            let spring = ShelfMotion.cardHover(keyPath: "transform")
+            spring.fromValue = NSValue(caTransform3D: current)
+            spring.toValue = NSValue(caTransform3D: target)
+            layer.add(spring, forKey: "chevronRotate")
+        } else {
+            layer.removeAnimation(forKey: "chevronRotate")
+        }
+        CATransaction.commit()
+    }
+
     override func accessibilityPerformPress() -> Bool {
         guard let onToggle else { return false }
         onToggle()
@@ -121,9 +173,8 @@ final class ShelfSectionHeaderView: NSView {
         titleLabel.sizeToFit()
         countLabel.sizeToFit()
 
-        let badgeW = max(22, ceil(countLabel.frame.width) + 14)
-        let badgeH: CGFloat = 17
-        let toggleW = 8 + 12 + 7 + 8 + 8 + ceil(titleLabel.frame.width) + 8 + badgeW + 8
+        let countW = ceil(countLabel.frame.width)
+        let toggleW = 8 + 12 + 7 + 7 + 8 + ceil(titleLabel.frame.width) + 7 + countW + 8
         let toggleH: CGFloat = 28
 
         toggleContainer.frame = NSRect(x: -6, y: round(centerY - toggleH * 0.5), width: toggleW, height: toggleH)
@@ -131,25 +182,37 @@ final class ShelfSectionHeaderView: NSView {
             refreshToggleTrackingArea()
         }
 
-        chevronImageView.frame = NSRect(x: 8, y: round((toggleH - 12) * 0.5), width: 12, height: 12)
+        let chevronRect = NSRect(x: 8, y: round((toggleH - 12) * 0.5), width: 12, height: 12)
+        if lastChevronRect != chevronRect {
+            lastChevronRect = chevronRect
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            chevronContainer.layer?.removeAnimation(forKey: "chevronRotate")
+            chevronContainer.layer?.transform = CATransform3DIdentity
+            chevronContainer.frame = chevronRect
+            chevronImageView.frame = chevronContainer.bounds
+            CATransaction.commit()
+            if let isCollapsedState {
+                updateChevronRotation(collapsed: isCollapsedState, animated: false)
+            }
+        }
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        dotLayer.frame = CGRect(x: 27, y: round((toggleH - 8) * 0.5), width: 8, height: 8)
+        dotLayer.frame = CGRect(x: 27, y: round((toggleH - 7) * 0.5), width: 7, height: 7)
         CATransaction.commit()
 
         titleLabel.frame = NSRect(
-            x: 43,
+            x: 42,
             y: round((toggleH - titleLabel.frame.height) * 0.5),
             width: ceil(titleLabel.frame.width),
             height: ceil(titleLabel.frame.height)
         )
 
-        let badgeX = titleLabel.frame.maxX + 8
-        countBadgeContainer.frame = NSRect(x: badgeX, y: round((toggleH - badgeH) * 0.5), width: badgeW, height: badgeH)
         countLabel.frame = NSRect(
-            x: 0,
-            y: round((badgeH - countLabel.frame.height) * 0.5),
-            width: badgeW,
+            x: titleLabel.frame.maxX + 7,
+            y: round((toggleH - countLabel.frame.height) * 0.5) + 0.5,
+            width: countW,
             height: ceil(countLabel.frame.height)
         )
 
@@ -165,7 +228,7 @@ final class ShelfSectionHeaderView: NSView {
         let lineRight = addButton.frame.minX - 10
         if lineRight > lineX {
             dividerLine.isHidden = false
-            dividerLine.frame = NSRect(x: lineX, y: round(centerY), width: lineRight - lineX, height: 1)
+            dividerLine.frame = NSRect(x: lineX, y: round(centerY), width: lineRight - lineX, height: 0.75)
         } else {
             dividerLine.isHidden = true
         }
@@ -193,12 +256,12 @@ final class ShelfSectionHeaderView: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         isToggleHovered = true
-        refreshDynamicColors()
+        refreshDynamicColors(animated: true)
     }
 
     override func mouseExited(with event: NSEvent) {
         isToggleHovered = false
-        refreshDynamicColors()
+        refreshDynamicColors(animated: true)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -212,16 +275,23 @@ final class ShelfSectionHeaderView: NSView {
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        refreshDynamicColors()
+        refreshDynamicColors(animated: false)
     }
 
-    private func refreshDynamicColors() {
+    private func refreshDynamicColors(animated: Bool) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
+            CATransaction.begin()
+            if animated {
+                CATransaction.setAnimationDuration(0.14)
+                CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+            } else {
+                CATransaction.setDisableActions(true)
+            }
             toggleContainer.layer?.backgroundColor = isToggleHovered
-                ? NSColor.labelColor.withAlphaComponent(0.06).cgColor
+                ? NSColor.labelColor.withAlphaComponent(0.055).cgColor
                 : NSColor.clear.cgColor
-            countBadgeContainer.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.08).cgColor
-            dividerLine.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.09).cgColor
+            dividerLine.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.07).cgColor
+            CATransaction.commit()
         }
     }
 }
@@ -254,7 +324,7 @@ private final class HeaderPlusButton: NSView {
             userInfo: nil
         )
         addTrackingArea(area)
-        updateAppearance()
+        updateAppearance(animated: false)
     }
 
     required init?(coder: NSCoder) {
@@ -265,7 +335,7 @@ private final class HeaderPlusButton: NSView {
         isHovered = false
         isPressed = false
         onClick = nil
-        updateAppearance()
+        updateAppearance(animated: false)
     }
 
     override func layout() {
@@ -275,24 +345,24 @@ private final class HeaderPlusButton: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         isHovered = true
-        updateAppearance()
+        updateAppearance(animated: true)
     }
 
     override func mouseExited(with event: NSEvent) {
         isHovered = false
         isPressed = false
-        updateAppearance()
+        updateAppearance(animated: true)
     }
 
     override func mouseDown(with event: NSEvent) {
         isPressed = true
-        updateAppearance()
+        updateAppearance(animated: true)
     }
 
     override func mouseUp(with event: NSEvent) {
         let inside = bounds.contains(convert(event.locationInWindow, from: nil))
         isPressed = false
-        updateAppearance()
+        updateAppearance(animated: true)
         if inside { onClick?() }
     }
 
@@ -304,19 +374,27 @@ private final class HeaderPlusButton: NSView {
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        updateAppearance()
+        updateAppearance(animated: false)
     }
 
-    private func updateAppearance() {
+    private func updateAppearance(animated: Bool) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            iconView.contentTintColor = isHovered ? .labelColor : .secondaryLabelColor
+            iconView.contentTintColor = isHovered ? .labelColor : .tertiaryLabelColor
+            CATransaction.begin()
+            if animated {
+                CATransaction.setAnimationDuration(0.14)
+                CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+            } else {
+                CATransaction.setDisableActions(true)
+            }
             if isPressed {
-                layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.13).cgColor
+                layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.12).cgColor
             } else if isHovered {
-                layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.07).cgColor
+                layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.065).cgColor
             } else {
                 layer?.backgroundColor = NSColor.clear.cgColor
             }
+            CATransaction.commit()
         }
     }
 }

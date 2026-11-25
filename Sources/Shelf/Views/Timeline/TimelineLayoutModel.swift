@@ -284,6 +284,25 @@ struct TimelineLayoutModel: Equatable, Sendable {
         )
     }
 
+    func tick(atX x: CGFloat) -> TimelineMonthTick? {
+        guard !monthTicks.isEmpty else { return nil }
+        if x <= monthTicks[0].x { return monthTicks[0] }
+        for tick in monthTicks {
+            if x >= tick.x && x < tick.x + tick.width {
+                return tick
+            }
+        }
+        return monthTicks.last
+    }
+
+    func yearStartTick(forYear year: Int) -> TimelineMonthTick? {
+        monthTicks.first { $0.year == year && $0.isYearStart }
+    }
+
+    func nextYearStartTick(afterYear year: Int) -> TimelineMonthTick? {
+        monthTicks.first { $0.year > year && $0.isYearStart }
+    }
+
     private static func startOfMonth(for date: Date, calendar: Calendar) -> Date {
         let comps = calendar.dateComponents([.year, .month], from: date)
         return calendar.date(from: comps) ?? calendar.startOfDay(for: date)

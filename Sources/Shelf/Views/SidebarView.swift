@@ -4,13 +4,14 @@ struct SidebarView: View {
     @Environment(LibraryStore.self) private var store
     @Environment(AppUpdater.self) private var updater
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var selectionNamespace
 
     private var lang: AppLanguage { store.language }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
                     sectionHeader(lang.tr("分类", "Library"))
                     destinationRow(.all)
                     ForEach(MediaCategory.allCases) { category in
@@ -18,12 +19,13 @@ struct SidebarView: View {
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
                     sectionHeader(lang.tr("精选", "Collections"))
                     destinationRow(.fiveStar)
                     destinationRow(.timeline)
                 }
             }
+            .animation(reduceMotion ? nil : ShelfMotion.control, value: store.selectedDestination)
             .padding(.horizontal, 10)
             .padding(.top, 12)
             .padding(.bottom, 16)
@@ -31,7 +33,7 @@ struct SidebarView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 if store.hasSampleItems {
-                    Divider().opacity(0.45)
+                    ShelfHairline()
 
                     HStack(spacing: 6) {
                         Image(systemName: "sparkles")
@@ -46,7 +48,7 @@ struct SidebarView: View {
                         }
                         .buttonStyle(
                             ShelfButtonStyle(
-                                variant: .secondary,
+                                variant: .subtle,
                                 horizontalPadding: 7,
                                 verticalPadding: 2.5,
                                 cornerRadius: 5
@@ -56,9 +58,10 @@ struct SidebarView: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
 
-                Divider()
+                ShelfHairline()
 
                 HStack(spacing: 6) {
                     CompactLanguageToggle(language: lang, onToggle: { store.toggleLanguage() })
@@ -67,8 +70,9 @@ struct SidebarView: View {
                 }
                 .padding(.horizontal, 12)
                 .frame(height: ShelfTheme.bottomBarHeight)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: updater.availableUpdate != nil)
+                .animation(reduceMotion ? nil : ShelfMotion.control, value: updater.availableUpdate != nil)
             }
+            .animation(reduceMotion ? nil : ShelfMotion.gentle, value: store.hasSampleItems)
             .background(.ultraThinMaterial.opacity(0.01))
         }
     }
@@ -79,7 +83,8 @@ struct SidebarView: View {
             icon: destination.systemImage,
             tint: destination.tintColor,
             count: store.count(for: destination),
-            isSelected: store.selectedDestination == destination
+            isSelected: store.selectedDestination == destination,
+            selectionNamespace: selectionNamespace
         ) {
             store.selectDestination(destination)
         }
@@ -87,10 +92,11 @@ struct SidebarView: View {
 
     private func sectionHeader(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(Color.primary.opacity(0.48))
+            .font(.system(size: 10.5, weight: .semibold))
+            .tracking(lang == .en ? 0.5 : 0.2)
+            .foregroundStyle(Color.primary.opacity(0.42))
             .padding(.horizontal, 10)
-            .padding(.bottom, 3)
+            .padding(.bottom, 4)
     }
 }
 
@@ -100,41 +106,57 @@ private struct SidebarRowButton: View {
     let tint: Color
     let count: Int
     let isSelected: Bool
+    let selectionNamespace: Namespace.ID
     let action: () -> Void
 
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
 
     var body: some View {
+        let isDark = colorScheme == .dark
         Button(action: action) {
             HStack(spacing: 9) {
                 Image(systemName: icon)
-                    .font(.system(size: 13.5, weight: .medium))
-                    .foregroundStyle(isSelected ? Color.white : tint)
+                    .font(.system(size: 13.5, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(tint)
+                    .opacity(isSelected ? 1.0 : (isHovered ? 0.95 : 0.85))
                     .frame(width: 18, alignment: .center)
 
                 Text(title)
                     .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.92))
+                    .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(isHovered ? 0.95 : 0.84))
                     .lineLimit(1)
 
                 Spacer(minLength: 6)
 
                 if count > 0 {
                     Text("\(count)")
-                        .font(.system(size: 11.5, weight: .medium, design: .rounded))
+                        .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium, design: .rounded))
                         .monospacedDigit()
-                        .foregroundStyle(isSelected ? Color.white.opacity(0.90) : Color.primary.opacity(0.48))
+                        .foregroundStyle(isSelected ? Color.primary.opacity(0.75) : Color.primary.opacity(0.40))
                 }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6.5)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isSelected ? Color.accentColor : (isHovered ? Color.primary.opacity(0.065) : Color.clear))
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 7.5, style: .continuous)
+                        .fill(tint.opacity(isDark ? 0.20 : 0.13))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7.5, style: .continuous)
+                                .strokeBorder(tint.opacity(isDark ? 0.30 : 0.22), lineWidth: 0.7)
+                        )
+                        .matchedGeometryEffect(id: "sidebarActive", in: selectionNamespace)
+                } else if isHovered {
+                    RoundedRectangle(cornerRadius: 7.5, style: .continuous)
+                        .fill(Color.primary.opacity(isDark ? 0.065 : 0.048))
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 7.5, style: .continuous))
         }
         .buttonStyle(.plain)
+        .animation(reduceMotion ? nil : ShelfMotion.micro, value: isHovered)
         .onHover { isHovered = $0 }
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
@@ -143,33 +165,30 @@ private struct SidebarRowButton: View {
 private struct CompactLanguageToggle: View {
     let language: AppLanguage
     let onToggle: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var pillNamespace
     @State private var isHovered = false
 
     var body: some View {
+        let isDark = colorScheme == .dark
         Button(action: onToggle) {
-            HStack(spacing: 4.5) {
-                Image(systemName: "globe")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 2) {
-                    langPill(title: "中", isSelected: language == .zh)
-                    Text("/")
-                        .font(.system(size: 9.5, weight: .regular))
-                        .foregroundStyle(.tertiary)
-                    langPill(title: "EN", isSelected: language == .en)
-                }
+            HStack(spacing: 1) {
+                langPill(title: "中", isSelected: language == .zh)
+                langPill(title: "EN", isSelected: language == .en)
             }
-            .padding(.horizontal, 6.5)
-            .padding(.vertical, 3)
+            .padding(2)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isHovered ? Color.primary.opacity(0.07) : Color.primary.opacity(0.035))
+                    .fill(Color.primary.opacity(isHovered ? (isDark ? 0.10 : 0.075) : (isDark ? 0.07 : 0.05)))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .strokeBorder(Color.primary.opacity(isHovered ? 0.14 : 0.08), lineWidth: 0.6)
             )
+            .animation(reduceMotion ? nil : ShelfMotion.control, value: language)
+            .animation(reduceMotion ? nil : ShelfMotion.micro, value: isHovered)
             .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -178,14 +197,19 @@ private struct CompactLanguageToggle: View {
     }
 
     private func langPill(title: String, isSelected: Bool) -> some View {
-        Text(title)
-            .font(.system(size: 10.5, weight: isSelected ? .semibold : .regular, design: .rounded))
-            .foregroundStyle(isSelected ? Color.primary.opacity(0.92) : Color.secondary.opacity(0.75))
-            .padding(.horizontal, 3.5)
-            .padding(.vertical, 1)
-            .background(
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(isSelected ? Color.primary.opacity(0.12) : Color.clear)
-            )
+        let isDark = colorScheme == .dark
+        return Text(title)
+            .font(.system(size: 10, weight: isSelected ? .semibold : .medium, design: .rounded))
+            .foregroundStyle(isSelected ? Color.primary : Color.secondary.opacity(0.75))
+            .padding(.horizontal, 5.5)
+            .padding(.vertical, 2)
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                        .shadow(color: .black.opacity(isDark ? 0.24 : 0.08), radius: 1.5, x: 0, y: 0.5)
+                        .matchedGeometryEffect(id: "langThumb", in: pillNamespace)
+                }
+            }
     }
 }

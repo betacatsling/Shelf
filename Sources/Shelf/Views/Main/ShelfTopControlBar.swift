@@ -3,7 +3,6 @@ import SwiftUI
 struct ShelfTopControlBar: View {
     @Environment(LibraryStore.self) private var store
     let counts: [TrackingStatus: Int]
-    let onAddItem: () -> Void
 
     private var lang: AppLanguage { store.language }
     private var activeCategory: MediaCategory? { store.selectedDestination.activeCategory }
@@ -28,30 +27,9 @@ struct ShelfTopControlBar: View {
                 onSelectField: { store.selectSortField($0) },
                 onSetAscending: { store.sortAscending = $0 }
             )
-
-            Button(action: onAddItem) {
-                HStack(spacing: 5) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 11.5, weight: .bold))
-                    Text(lang.tr("添加作品", "Add Item"))
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .lineLimit(1)
-                }
-            }
-            .buttonStyle(
-                ShelfButtonStyle(
-                    variant: .primary,
-                    horizontalPadding: 13,
-                    verticalPadding: 6.5,
-                    cornerRadius: 8
-                )
-            )
-            .fixedSize()
-            .disabled(!store.isReady)
-            .help(lang.tr("添加新作品 (⌘N)", "Add new item (⌘N)"))
         }
         .padding(.horizontal, ShelfTheme.horizontalPadding)
-        .padding(.vertical, 10)
+        .padding(.vertical, 9)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 

@@ -3,6 +3,7 @@ import SwiftUI
 
 struct TagManagerView: View {
     @Environment(LibraryStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let onFilterApplied: () -> Void
     let onUpdateTitle: (String) -> Void
@@ -59,7 +60,7 @@ struct TagManagerView: View {
     var body: some View {
         VStack(spacing: 0) {
             headerToolbar
-            Divider()
+            ShelfHairline()
 
             confirmationBannerSection
 
@@ -69,9 +70,10 @@ struct TagManagerView: View {
                 filteredListContent
             }
 
-            Divider()
+            ShelfHairline()
             footerBar
         }
+        .animation(reduceMotion ? nil : ShelfMotion.control, value: inlineMode)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
@@ -318,15 +320,19 @@ struct TagManagerView: View {
 
         return HStack(spacing: 6) {
             Button {
-                if isCollapsed {
-                    collapsedCategoryIDs.remove(section.id)
-                } else {
-                    collapsedCategoryIDs.insert(section.id)
+                withAnimation(reduceMotion ? nil : ShelfMotion.control) {
+                    if isCollapsed {
+                        collapsedCategoryIDs.remove(section.id)
+                    } else {
+                        collapsedCategoryIDs.insert(section.id)
+                    }
                 }
             } label: {
-                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                Image(systemName: "chevron.right")
                     .font(.system(size: 9.5, weight: .semibold))
                     .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                    .animation(reduceMotion ? nil : ShelfMotion.micro, value: isCollapsed)
                     .frame(width: 14, height: 14)
                     .contentShape(Rectangle())
             }
@@ -446,11 +452,15 @@ struct TagManagerView: View {
 
             if trimmedFilter.isEmpty && row.hasChildren {
                 Button {
-                    toggleCollapse(row.id)
+                    withAnimation(reduceMotion ? nil : ShelfMotion.control) {
+                        toggleCollapse(row.id)
+                    }
                 } label: {
-                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                    Image(systemName: "chevron.right")
                         .font(.system(size: 9.5, weight: .bold))
                         .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                        .animation(reduceMotion ? nil : ShelfMotion.micro, value: isCollapsed)
                         .frame(width: 16, height: 18)
                         .contentShape(Rectangle())
                 }
@@ -536,6 +546,8 @@ struct TagManagerView: View {
                 .strokeBorder(isDropTarget ? Color.accentColor : Color.clear, lineWidth: 1.2)
         )
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .animation(reduceMotion ? nil : ShelfMotion.micro, value: isHovered)
+        .animation(reduceMotion ? nil : ShelfMotion.micro, value: isSelected)
         .onHover { hovering in
             hoveredTagID = hovering ? row.id : (hoveredTagID == row.id ? nil : hoveredTagID)
         }

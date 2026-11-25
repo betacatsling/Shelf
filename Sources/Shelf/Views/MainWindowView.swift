@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MainWindowView: View {
     @Environment(LibraryStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var showAddSheet: Bool
     @AppStorage(PosterScaleConfig.storageKey) private var posterScale: Double = PosterScaleConfig.defaultScale
     @AppStorage(TimelineZoomConfig.storageKey) private var timelineZoom: Double = TimelineZoomConfig.defaultZoom
@@ -52,7 +53,11 @@ struct MainWindowView: View {
         let prepared = backgroundRequest == nil ? nil : preparedLibrary
         let library = backgroundRequest == nil ? store.projection() : (prepared?.1 ?? .empty)
         let options = prepared?.0.options ?? request.options
-        let showsDetails = store.selectedItemID.flatMap(store.item(withID:)) != nil
+        let activeOverlayID: Int = {
+            if store.isQuickFindPresented { return 1 }
+            if let pickerItemID = store.tagPickerItemID, store.item(withID: pickerItemID) != nil { return 2 }
+            return 0
+        }()
         let isTimeline = store.selectedDestination.isTimeline
         let visibleCount: Int = {
             guard isTimeline else { return library.count }
@@ -69,11 +74,8 @@ struct MainWindowView: View {
             GeometryReader { workspace in
                 VStack(alignment: .leading, spacing: 0) {
                     if !isTimeline {
-                        ShelfTopControlBar(counts: library.statusCounts) {
-                            quickAddPresetStatus = nil
-                            showAddSheet = true
-                        }
-                        Divider()
+                        ShelfTopControlBar(counts: library.statusCounts)
+                        ShelfHairline()
                     }
 
                     libraryCanvas(
@@ -85,7 +87,7 @@ struct MainWindowView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay(alignment: .bottom) { LibraryToastView() }
 
-                    Divider()
+                    ShelfHairline()
                     ShelfBottomStatusBar(
                         countText: statusBarCountText(visibleCount, isTimeline: isTimeline),
                         isTimeline: isTimeline,
@@ -102,25 +104,53 @@ struct MainWindowView: View {
                     onReplaceCover: { coverReplacingItem = $0 }
                 ))
                 .overlay {
-                    if store.isQuickFindPresented {
-                        QuickFindOverlay(store: store, library: library, language: lang) {
-                            store.isQuickFindPresented = false
+                    ZStack {
+                        if activeOverlayID != 0 {
+                            Color.black.opacity(activeOverlayID == 1 ? 0.22 : 0.18)
+                                .ignoresSafeArea()
+                                .transition(.opacity)
+                                .allowsHitTesting(false)
                         }
-                        .transition(.opacity)
-                    } else if let pickerItemID = store.tagPickerItemID,
-                              store.item(withID: pickerItemID) != nil {
-                        TagPickerOverlay(store: store, itemID: pickerItemID, language: lang) {
-                            store.tagPickerItemID = nil
+
+                        if store.isQuickFindPresented {
+                            QuickFindOverlay(store: store, library: library, language: lang) {
+                                store.isQuickFindPresented = false
+                            }
+                            .transition(
+                                reduceMotion
+                                    ? .opacity
+                                    : .asymmetric(
+                                        insertion: .opacity
+                                            .combined(with: .scale(scale: 0.96, anchor: .top))
+                                            .combined(with: .offset(y: -8)),
+                                        removal: .opacity.combined(with: .scale(scale: 0.98, anchor: .top))
+                                    )
+                            )
+                        } else if let pickerItemID = store.tagPickerItemID,
+                                  store.item(withID: pickerItemID) != nil {
+                            TagPickerOverlay(store: store, itemID: pickerItemID, language: lang) {
+                                store.tagPickerItemID = nil
+                            }
+                            .transition(
+                                reduceMotion
+                                    ? .opacity
+                                    : .asymmetric(
+                                        insertion: .opacity
+                                            .combined(with: .scale(scale: 0.96, anchor: .top))
+                                            .combined(with: .offset(y: -8)),
+                                        removal: .opacity.combined(with: .scale(scale: 0.98, anchor: .top))
+                                    )
+                            )
                         }
-                        .transition(.opacity)
                     }
+                    .animation(reduceMotion ? nil : ShelfMotion.panel, value: activeOverlayID)
                 }
             }
             .background(Color(nsColor: .windowBackgroundColor))
             .navigationTitle(store.selectedDestination.title(in: lang))
             .navigationSubtitle(itemCountText(visibleCount, compact: true))
             .toolbar {
-                toolbarContent(showsDetails: showsDetails, untaggedCountInView: library.untaggedCount)
+                toolbarContent(untaggedCountInView: library.untaggedCount)
             }
         }
         .sheet(isPresented: $showAddSheet, onDismiss: { quickAddPresetStatus = nil }) {
@@ -192,49 +222,58 @@ struct MainWindowView: View {
     ) -> some View {
         VStack(spacing: 0) {
             if store.hasActiveFilter {
-                ActiveFilterBar(library: library)
-                Divider()
+                VStack(spacing: 0) {
+                    ActiveFilterBar(library: library)
+                    ShelfHairline()
+                }
+                .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
             }
 
-            if store.isLoading || waiting {
-                ProgressView()
+            ZStack {
+                if store.isLoading || waiting {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if store.loadFailed {
+                    Text(lang.tr("无法读取作品库文件", "Could not read the library file"))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if options.destination.isTimeline {
+                    TimelineView(
+                        posters: library.sections.flatMap(\.items),
+                        selectedItemID: store.selectedItemID,
+                        zoom: $timelineZoom,
+                        effectiveZoom: draggedTimelineZoom ?? timelineZoom,
+                        language: options.language,
+                        actions: timelineActions
+                    )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if store.loadFailed {
-                Text(lang.tr("无法读取作品库文件", "Could not read the library file"))
-                    .foregroundStyle(.secondary)
+                    .transition(.opacity)
+                } else if library.count == 0 {
+                    LibraryEmptyStateView {
+                        quickAddPresetStatus = nil
+                        showAddSheet = true
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if options.destination.isTimeline {
-                TimelineView(
-                    posters: library.sections.flatMap(\.items),
-                    selectedItemID: store.selectedItemID,
-                    zoom: $timelineZoom,
-                    effectiveZoom: draggedTimelineZoom ?? timelineZoom,
-                    language: options.language,
-                    actions: timelineActions
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if library.count == 0 {
-                Spacer(minLength: 0)
-                LibraryEmptyStateView {
-                    quickAddPresetStatus = nil
-                    showAddSheet = true
+                    .transition(.opacity)
+                } else {
+                    NativePosterGrid(
+                        sections: library.sections,
+                        collapsedShelves: collapsedShelves,
+                        selectedItemID: store.selectedItemID,
+                        showStatusBadges: library.showStatusBadges,
+                        posterScale: draggedPosterScale ?? posterScale,
+                        posterWidthBasis: posterWidthBasis,
+                        language: options.language,
+                        scrollResetToken: scrollResetToken(for: options),
+                        actions: gridActions
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transition(.opacity)
                 }
-                Spacer(minLength: 0)
-            } else {
-                NativePosterGrid(
-                    sections: library.sections,
-                    collapsedShelves: collapsedShelves,
-                    selectedItemID: store.selectedItemID,
-                    showStatusBadges: library.showStatusBadges,
-                    posterScale: draggedPosterScale ?? posterScale,
-                    posterWidthBasis: posterWidthBasis,
-                    language: options.language,
-                    scrollResetToken: scrollResetToken(for: options),
-                    actions: gridActions
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .animation(reduceMotion ? nil : ShelfMotion.gentle, value: options.destination.isTimeline)
         }
+        .animation(reduceMotion ? nil : ShelfMotion.control, value: store.hasActiveFilter)
     }
 
     private var gridActions: PosterGridActions {
@@ -336,7 +375,7 @@ struct MainWindowView: View {
     }
 
     @ToolbarContentBuilder
-    private func toolbarContent(showsDetails: Bool, untaggedCountInView: Int) -> some ToolbarContent {
+    private func toolbarContent(untaggedCountInView: Int) -> some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             Button {
                 store.tagPickerItemID = nil
@@ -353,12 +392,13 @@ struct MainWindowView: View {
 
         ToolbarItem(placement: .primaryAction) {
             Button {
-                store.selectedItemID = nil
+                quickAddPresetStatus = nil
+                showAddSheet = true
             } label: {
-                Label(lang.tr("收起详情栏", "Hide Details"), systemImage: "sidebar.right")
+                Label(lang.tr("添加作品", "Add Item"), systemImage: "plus")
             }
-            .disabled(!showsDetails)
-            .help(lang.tr("收起右侧详情面板", "Hide right details panel"))
+            .disabled(!store.isReady)
+            .help(lang.tr("添加新作品 (⌘N)", "Add new item (⌘N)"))
         }
     }
 
@@ -379,27 +419,52 @@ struct MainWindowView: View {
 
 private struct LibraryToastView: View {
     @Environment(LibraryStore.self) private var store
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let isDark = colorScheme == .dark
         ZStack {
             if let toast = store.toastMessage {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 13.5, weight: .semibold))
                         .foregroundStyle(.green)
                     Text(toast)
                         .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(.primary)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 9)
-                .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
-                .overlay { Capsule().strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.8) }
-                .shadow(color: .black.opacity(0.22), radius: 10, x: 0, y: 4)
-                .padding(.bottom, 14)
-                .transition(.opacity)
+                .padding(.horizontal, 15)
+                .padding(.vertical, 8.5)
+                .background(.regularMaterial, in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(isDark ? 0.20 : 0.65),
+                                Color.primary.opacity(isDark ? 0.10 : 0.12)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.75
+                    )
+                }
+                .shadow(color: .black.opacity(isDark ? 0.36 : 0.14), radius: 14, x: 0, y: 6)
+                .padding(.bottom, 16)
+                .transition(
+                    reduceMotion
+                        ? .opacity
+                        : .asymmetric(
+                            insertion: .move(edge: .bottom)
+                                .combined(with: .scale(scale: 0.92))
+                                .combined(with: .opacity),
+                            removal: .opacity.combined(with: .scale(scale: 0.96))
+                        )
+                )
             }
         }
         .allowsHitTesting(false)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: store.toastMessage != nil)
+        .animation(reduceMotion ? nil : ShelfMotion.panel, value: store.toastMessage)
     }
 }

@@ -10,40 +10,48 @@ struct LibraryEmptyStateView: View {
     var body: some View {
         let hasActiveSearch = store.hasActiveFilter
         VStack(spacing: 14) {
-            Image(systemName: activeCategory?.systemImage ?? "books.vertical")
-                .font(.system(size: 42, weight: .light))
-                .foregroundStyle(.secondary.opacity(0.7))
+            ZStack {
+                Circle()
+                    .fill(Color.primary.opacity(0.05))
+                    .frame(width: 68, height: 68)
 
-            Text(
-                !hasActiveSearch
-                    ? lang.tr("暂无记录", "No Items Yet")
-                    : lang.tr("没有找到匹配项", "No Matching Items")
-            )
-            .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(.primary.opacity(0.85))
+                Image(systemName: hasActiveSearch ? "magnifyingglass" : (activeCategory?.systemImage ?? "books.vertical"))
+                    .font(.system(size: 28, weight: .light))
+                    .foregroundStyle(activeCategory?.accentColor.opacity(0.8) ?? Color.secondary)
+            }
 
-            Text(
-                !hasActiveSearch
-                    ? lang.tr("点击下方按钮或右上角「添加作品」开始记录。", "Click below or “Add Item” in the top-right to start tracking.")
-                    : lang.tr("试试换个关键词，或清除筛选条件。", "Try another keyword or clear your active filters.")
-            )
-            .font(.system(size: 13))
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: 380)
+            VStack(spacing: 6) {
+                Text(
+                    !hasActiveSearch
+                        ? lang.tr("暂无记录", "No Items Yet")
+                        : lang.tr("没有找到匹配项", "No Matching Items")
+                )
+                .font(.system(size: 15.5, weight: .semibold))
+                .foregroundStyle(.primary.opacity(0.90))
+
+                Text(
+                    !hasActiveSearch
+                        ? lang.tr("点击下方按钮或工具栏「+」开始记录。", "Click below or “+” in the toolbar to start tracking.")
+                        : lang.tr("试试换个关键词，或清除筛选条件。", "Try another keyword or clear your active filters.")
+                )
+                .font(.system(size: 12.5))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+            }
 
             if !hasActiveSearch {
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     Button(action: onAddItem) {
                         Label(lang.tr("添加作品", "Add Item"), systemImage: "plus")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 12.5, weight: .semibold))
                     }
                     .buttonStyle(
                         ShelfButtonStyle(
                             variant: .primary,
-                            horizontalPadding: 18,
-                            verticalPadding: 8,
-                            cornerRadius: 9
+                            horizontalPadding: 16,
+                            verticalPadding: 7.5,
+                            cornerRadius: 8
                         )
                     )
 
@@ -52,27 +60,27 @@ struct LibraryEmptyStateView: View {
                             store.restoreSampleItems()
                         } label: {
                             Label(lang.tr("载入示例数据", "Load Sample Data"), systemImage: "sparkles")
-                                .font(.system(size: 13, weight: .medium))
+                                .font(.system(size: 12.5, weight: .medium))
                         }
                         .buttonStyle(
                             ShelfButtonStyle(
                                 variant: .secondary,
-                                horizontalPadding: 16,
-                                verticalPadding: 8,
-                                cornerRadius: 9
+                                horizontalPadding: 14,
+                                verticalPadding: 7.5,
+                                cornerRadius: 8
                             )
                         )
                     }
                 }
-                .padding(.top, 6)
+                .padding(.top, 2)
             } else {
-                Button(lang.tr("清除搜索", "Clear Search")) {
+                Button(lang.tr("清除筛选", "Clear Filters")) {
                     store.clearSearch()
                 }
                 .buttonStyle(
                     ShelfButtonStyle(
                         variant: .secondary,
-                        horizontalPadding: 16,
+                        horizontalPadding: 14,
                         verticalPadding: 7,
                         cornerRadius: 8
                     )

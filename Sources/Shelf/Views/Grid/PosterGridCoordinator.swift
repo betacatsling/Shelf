@@ -29,10 +29,18 @@ extension NativePosterGrid {
         private var hasLoadedInitialData = false
 
         var isLiveScrolling: Bool { scrollController.isLiveScrolling }
+        private struct ReflowSnapshot {
+            let cards: [UUID: CGRect]
+            let headers: [TrackingStatus: CGRect]
+            let opensDrawer: Bool
+            let isCollapseToggle: Bool
+        }
+
         var reduceMotion = false {
             didSet {
                 if reduceMotion && !oldValue {
                     for card in cards.values { card.cancelReflowAnimation() }
+                    for header in headers.values { header.cancelReflowAnimation() }
                 }
             }
         }
@@ -122,15 +130,27 @@ extension NativePosterGrid {
             }
 
             let structureChanged = initial || (contentChanged && !hasSamePositions(as: oldSections))
+            let collapseOnlyChange = !initial && !resetScroll && !scaleChanged
+                && oldParent.sections == parent.sections
+                && oldParent.collapsedShelves != parent.collapsedShelves
             let appearanceChanged = contentChanged || oldParent.language != parent.language
                 || oldParent.showStatusBadges != parent.showStatusBadges
-            let previousFrames = !structureChanged && !scaleChanged && !resetScroll
-                ? cardFramesBeforeDrawerResize(to: clip.bounds) : nil
-            let opensDrawer = clip.bounds.width < viewportSize.width
+            let reflowSnapshot: ReflowSnapshot? = {
+                if collapseOnlyChange {
+                    return captureCollapseSnapshot(in: clip.bounds)
+                }
+                if !structureChanged && !scaleChanged && !resetScroll {
+                    return captureDrawerReflowSnapshot(for: clip.bounds)
+                }
+                return nil
+            }()
             if structureChanged {
                 hasLoadedInitialData = true
                 clearHoveredCell(animated: false)
-                for card in cards.values { card.cancelReflowAnimation() }
+                if !collapseOnlyChange {
+                    for card in cards.values { card.cancelReflowAnimation() }
+                    for header in headers.values { header.cancelReflowAnimation() }
+                }
                 stopPrefetching()
                 rebuildIndexPaths()
             }
@@ -144,7 +164,7 @@ extension NativePosterGrid {
 
             if appearanceChanged || scaleChanged || resized || resetScroll {
                 updateMountedViews(force: true, reconfigure: appearanceChanged)
-                animateReflow(from: previousFrames, in: clip.bounds, opensDrawer: opensDrawer)
+                animateReflow(from: reflowSnapshot, in: clip.bounds)
                 updatePrefetchPlan()
             }
             if priorSelection != selectedID {
@@ -166,38 +186,68 @@ extension NativePosterGrid {
             let viewport = scrollView.contentView.bounds
             guard viewport.size != viewportSize else { return }
             let anchor = viewport.width != viewportSize.width ? viewportAnchor(in: viewport) : nil
-            let previousFrames = cardFramesBeforeDrawerResize(to: viewport)
-            let opensDrawer = viewport.width < viewportSize.width
+            let snapshot = captureDrawerReflowSnapshot(for: viewport)
             boundsObservationSuspended = true
             updateGridSize(for: viewport.size)
             setScrollPosition(restoredY(for: anchor, fallback: viewport.minY), in: scrollView)
             boundsObservationSuspended = false
             updateMountedViews(force: true, reconfigure: false)
-            animateReflow(from: previousFrames, in: scrollView.contentView.bounds, opensDrawer: opensDrawer)
+            animateReflow(from: snapshot, in: scrollView.contentView.bounds)
             updatePrefetchPlan()
         }
 
-        private func cardFramesBeforeDrawerResize(to viewport: CGRect) -> [IndexPath: CGRect]? {
+        private func captureDrawerReflowSnapshot(for viewport: CGRect) -> ReflowSnapshot? {
             guard let fullWidth = parent.posterWidthBasis, !reduceMotion, !isLiveScrolling,
                   scrollView?.window?.inLiveResize == false, viewport.height == viewportSize.height,
                   abs(max(viewport.width, viewportSize.width) - fullWidth) < 1,
                   abs(abs(viewport.width - viewportSize.width) - DetailDrawer.width) < 1 else { return nil }
 
             let previous = CGRect(origin: viewport.origin, size: viewportSize)
-            return cards.reduce(into: [:]) { frames, entry in
-                let frame = entry.value.frame
-                if previous.intersects(frame) {
-                    frames[entry.key] = frame.offsetBy(dx: -previous.minX, dy: -previous.minY)
-                }
-            }
+            return captureVisibleFrames(in: previous, opensDrawer: viewport.width < viewportSize.width, isCollapseToggle: false)
         }
 
-        private func animateReflow(from previousFrames: [IndexPath: CGRect]?, in viewport: CGRect, opensDrawer: Bool) {
-            guard let previousFrames else { return }
-            for (path, card) in cards where viewport.intersects(card.frame) {
-                let frame = card.frame.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
-                if previousFrames[path] != frame {
-                    card.animateReflow(horizontalOffset: opensDrawer ? 12 : -12)
+        private func captureCollapseSnapshot(in viewport: CGRect) -> ReflowSnapshot? {
+            guard !reduceMotion, !isLiveScrolling, scrollView?.window != nil else { return nil }
+            return captureVisibleFrames(in: viewport, opensDrawer: false, isCollapseToggle: true)
+        }
+
+        private func captureVisibleFrames(in viewport: CGRect, opensDrawer: Bool, isCollapseToggle: Bool) -> ReflowSnapshot {
+            let cardFrames: [UUID: CGRect] = cards.values.reduce(into: [:]) { frames, card in
+                guard let id = card.item?.id, viewport.intersects(card.frame) else { return }
+                frames[id] = card.frame.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
+            }
+            let headerFrames: [TrackingStatus: CGRect] = headers.reduce(into: [:]) { frames, entry in
+                guard sections.indices.contains(entry.key),
+                      let status = sections[entry.key].status,
+                      viewport.intersects(entry.value.frame) else { return }
+                frames[status] = entry.value.frame.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
+            }
+            return ReflowSnapshot(cards: cardFrames, headers: headerFrames, opensDrawer: opensDrawer, isCollapseToggle: isCollapseToggle)
+        }
+
+        private func animateReflow(from snapshot: ReflowSnapshot?, in viewport: CGRect) {
+            guard let snapshot else { return }
+            for card in cards.values where viewport.intersects(card.frame) {
+                guard let id = card.item?.id else { continue }
+                let newFrame = card.frame.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
+                if let oldFrame = snapshot.cards[id] {
+                    let dx = oldFrame.minX - newFrame.minX
+                    let dy = oldFrame.minY - newFrame.minY
+                    if abs(dx) > 0.5 || abs(dy) > 0.5 {
+                        card.animateReflow(fromOffset: CGPoint(x: dx, y: dy))
+                    }
+                } else {
+                    card.animateReflowEntrance(horizontalOffset: snapshot.isCollapseToggle ? 0 : (snapshot.opensDrawer ? 16 : -16))
+                }
+            }
+
+            for (index, header) in headers where viewport.intersects(header.frame) {
+                guard sections.indices.contains(index), let status = sections[index].status,
+                      let oldFrame = snapshot.headers[status] else { continue }
+                let newFrame = header.frame.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
+                let dy = oldFrame.minY - newFrame.minY
+                if abs(dy) > 0.5 {
+                    header.animateReflow(verticalOffset: dy)
                 }
             }
         }

@@ -7,6 +7,7 @@ struct InlineTagField: View {
     @Binding var selectedTags: [String]
     let language: AppLanguage
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var query: String = ""
     @State private var highlightedIndex: Int = 0
     @State private var showPickerPopover: Bool = false
@@ -158,6 +159,7 @@ struct InlineTagField: View {
             .onChange(of: query) { _, _ in
                 highlightedIndex = 0
             }
+            .animation(reduceMotion ? nil : ShelfMotion.control, value: selectedTags)
 
             if !currentSuggestions.isEmpty {
                 VStack(alignment: .leading, spacing: 1) {

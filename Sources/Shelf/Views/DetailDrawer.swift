@@ -197,17 +197,13 @@ final class DetailDrawerClipView: NSView {
         layer.sublayerTransform = CATransform3DMakeTranslation(x, 0, 0)
         var dockDelay = 0.0
         if animated && abs(currentX - x) > 0.5 {
-            let animation = CABasicAnimation(keyPath: "sublayerTransform")
-            animation.fromValue = NSValue(caTransform3D: CATransform3DMakeTranslation(currentX, 0, 0))
-            animation.toValue = NSValue(caTransform3D: layer.sublayerTransform)
+            let spring = ShelfMotion.drawerSlide(keyPath: "sublayerTransform")
+            spring.fromValue = NSValue(caTransform3D: CATransform3DMakeTranslation(currentX, 0, 0))
+            spring.toValue = NSValue(caTransform3D: layer.sublayerTransform)
+            layer.add(spring, forKey: animationKey)
+            // Reflow while the drawer already covers most of the dock (open) or begins peeling away (close).
             let distance = min(1, abs(currentX - x) / DetailDrawer.width)
-            animation.duration = 0.12 + (open ? 0.22 : 0.18) * distance
-            animation.timingFunction = open
-                ? CAMediaTimingFunction(controlPoints: 0.34, 0.12, 0.29, 1)
-                : CAMediaTimingFunction(name: .easeInEaseOut)
-            layer.add(animation, forKey: animationKey)
-            // Reflow while the drawer still covers most of the dock, in either direction.
-            dockDelay = animation.duration * (open ? 0.59 : 0.24)
+            dockDelay = (open ? 0.14 : 0.045) * max(0.35, distance)
         }
         CATransaction.commit()
         scheduleDock(open, after: dockDelay)
@@ -239,7 +235,7 @@ private struct HostedDetailPanel: View {
     var body: some View {
         if let content {
             HStack(spacing: 0) {
-                Divider()
+                ShelfHairline(vertical: true)
                 ItemDetailPanel(item: content.item, isShowing: content.isShowing,
                                 onReplaceCover: { content.onReplaceCover(content.item) },
                                 onClose: { content.store.selectedItemID = nil })

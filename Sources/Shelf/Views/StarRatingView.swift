@@ -8,6 +8,7 @@ struct StarRatingView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hoveredStar: Int? = nil
+    @State private var pulseStar: Int? = nil
 
     private var effectiveRating: Int {
         hoveredStar ?? rating
@@ -19,6 +20,7 @@ struct StarRatingView: View {
                 starIcon(for: index)
             }
         }
+        .animation(reduceMotion ? nil : ShelfMotion.micro, value: effectiveRating)
         .onHover { inside in
             if !inside { hoveredStar = nil }
         }
@@ -39,15 +41,22 @@ struct StarRatingView: View {
 
     @ViewBuilder
     private func starIcon(for index: Int) -> some View {
-        let icon = Image(systemName: index <= effectiveRating ? "star.fill" : "star")
+        let isFilled = index <= effectiveRating
+        let isTarget = interactive && hoveredStar == index
+        let isLeadingPreview = interactive && (hoveredStar.map { index < $0 } ?? false)
+        let isPulsing = pulseStar == index
+        let scale: CGFloat = reduceMotion ? 1.0 : (isPulsing ? 1.24 : (isTarget ? 1.15 : (isLeadingPreview ? 1.04 : 1.0)))
+
+        let icon = Image(systemName: isFilled ? "star.fill" : "star")
             .font(.system(size: starSize, weight: .medium))
             .foregroundStyle(
-                index <= effectiveRating
+                isFilled
                     ? ShelfTheme.starGold
-                    : Color.secondary.opacity(0.38)
+                    : Color.secondary.opacity(0.35)
             )
-            .scaleEffect(!reduceMotion && interactive && hoveredStar == index ? 1.12 : 1.0)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hoveredStar == index)
+            .shadow(color: isFilled ? ShelfTheme.starGold.opacity(0.28) : .clear, radius: 3, x: 0, y: 1)
+            .scaleEffect(scale)
+            .animation(reduceMotion ? nil : .spring(duration: 0.22, bounce: 0.25), value: scale)
 
         if interactive {
             icon
@@ -60,7 +69,14 @@ struct StarRatingView: View {
                     }
                 }
                 .onTapGesture {
-                    rating = (rating == index) ? 0 : index
+                    let next = (rating == index) ? 0 : index
+                    rating = next
+                    if next > 0 && !reduceMotion {
+                        pulseStar = index
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
+                            if pulseStar == index { pulseStar = nil }
+                        }
+                    }
                 }
         } else {
             icon

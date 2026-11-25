@@ -132,7 +132,7 @@ struct TagPickerContentView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                Divider()
+                ShelfHairline()
             }
 
             ShelfSearchBar(
@@ -410,6 +410,8 @@ struct TagPickerContentView: View {
             }
         }
         .buttonStyle(.plain)
+        .animation(.easeOut(duration: 0.10), value: isHighlighted)
+        .animation(.easeOut(duration: 0.10), value: isHovered)
         .onHover { hovering in
             hoveredID = hovering ? row.id : (hoveredID == row.id ? nil : hoveredID)
         }
@@ -504,7 +506,7 @@ struct TagPickerOverlay: View {
             language.tr("为 \($0) 设置标签", "Tags for \($0)")
         }
 
-        ModalOverlayContainer(width: 300, topPadding: 64, cornerRadius: 12, backdropOpacity: 0.18, onDismiss: onDismiss) {
+        ModalOverlayContainer(width: 300, topPadding: 64, cornerRadius: 12, backdropOpacity: 0.18, showsBackdrop: false, onDismiss: onDismiss) {
             TagPickerContentView(
                 store: store,
                 itemID: itemID,
@@ -513,7 +515,6 @@ struct TagPickerOverlay: View {
                 showCloseButton: true,
                 onClose: onDismiss
             )
-            .background(Color(nsColor: .windowBackgroundColor))
         }
     }
 }

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ActiveFilterBar: View {
     @Environment(LibraryStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let library: LibraryProjection
 
     private var lang: AppLanguage { store.language }
@@ -14,7 +15,7 @@ struct ActiveFilterBar: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     if store.filterUntaggedOnly {
-                        activeFilterPill(
+                        ActiveFilterPill(
                             icon: "tag.slash",
                             title: lang.tr("无标签", "No Tag"),
                             isAccent: true
@@ -29,13 +30,13 @@ struct ActiveFilterBar: View {
                         let label = ancestors.isEmpty
                             ? localized
                             : "\(TagCatalog.formattedBreadcrumb(ancestors: ancestors, language: lang)) › \(localized)"
-                        activeFilterPill(icon: "tag.fill", title: label, isAccent: true) {
+                        ActiveFilterPill(icon: "tag.fill", title: label, isAccent: true) {
                             store.toggleSearchTag(token.tag)
                         }
                     }
 
                     if !trimmedQuery.isEmpty {
-                        activeFilterPill(icon: "magnifyingglass", title: "“\(trimmedQuery)”", isAccent: false) {
+                        ActiveFilterPill(icon: "magnifyingglass", title: "“\(trimmedQuery)”", isAccent: false) {
                             store.searchText = ""
                         }
                     }
@@ -47,25 +48,14 @@ struct ActiveFilterBar: View {
                             .padding(.horizontal, 2)
 
                         ForEach(suggestions, id: \.self) { tag in
-                            Button {
+                            NarrowingTagPill(title: MediaCategory.localizedTag(tag, in: lang)) {
                                 store.refineTagFilter(with: tag)
-                            } label: {
-                                Text(MediaCategory.localizedTag(tag, in: lang))
-                                    .font(.system(size: 11.5, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 9)
-                                    .padding(.vertical, 3.5)
-                                    .background(Color.primary.opacity(0.055), in: Capsule())
-                                    .overlay(
-                                        Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.7)
-                                    )
-                                    .contentShape(Capsule())
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                 }
                 .padding(.vertical, 1)
+                .animation(reduceMotion ? nil : ShelfMotion.control, value: store.searchTokens)
             }
 
             Button(lang.tr("清除", "Clear")) {
@@ -85,20 +75,67 @@ struct ActiveFilterBar: View {
         .padding(.horizontal, ShelfTheme.horizontalPadding)
         .padding(.vertical, 7)
     }
+}
 
-    private func activeFilterPill(icon: String, title: String, isAccent: Bool, onRemove: @escaping () -> Void) -> some View {
+private struct ActiveFilterPill: View {
+    let icon: String
+    let title: String
+    let isAccent: Bool
+    let onRemove: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+
+    var body: some View {
         Button(action: onRemove) {
             HStack(spacing: 5) {
                 Image(systemName: icon).font(.system(size: 10, weight: .semibold))
                 Text(title).font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
-                Image(systemName: "xmark").font(.system(size: 8.5, weight: .bold)).opacity(0.85)
+                Image(systemName: "xmark")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .opacity(isHovered ? 1.0 : 0.72)
             }
             .foregroundStyle(isAccent ? Color.white : Color.primary)
             .padding(.horizontal, 9)
             .padding(.vertical, 3.5)
-            .background(Capsule().fill(isAccent ? Color.accentColor : Color.primary.opacity(0.10)))
+            .background(
+                Capsule().fill(
+                    isAccent
+                        ? Color.accentColor.opacity(isHovered ? 0.88 : 1.0)
+                        : Color.primary.opacity(isHovered ? 0.14 : 0.09)
+                )
+            )
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .animation(reduceMotion ? nil : ShelfMotion.micro, value: isHovered)
+        .onHover { isHovered = $0 }
+        .transition(.scale(scale: 0.90).combined(with: .opacity))
+    }
+}
+
+private struct NarrowingTagPill: View {
+    let title: String
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(isHovered ? Color.primary : Color.secondary)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 3.5)
+                .background(Color.primary.opacity(isHovered ? 0.09 : 0.048), in: Capsule())
+                .overlay(
+                    Capsule().strokeBorder(Color.primary.opacity(isHovered ? 0.16 : 0.09), lineWidth: 0.7)
+                )
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .animation(reduceMotion ? nil : ShelfMotion.micro, value: isHovered)
+        .onHover { isHovered = $0 }
     }
 }

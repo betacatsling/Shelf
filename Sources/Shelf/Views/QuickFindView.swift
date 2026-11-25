@@ -104,7 +104,7 @@ struct QuickFindOverlay: View {
         let safeIndex = flatEntries.isEmpty ? 0 : min(max(highlightedIndex, 0), flatEntries.count - 1)
         let indexByID = Dictionary(uniqueKeysWithValues: flatEntries.enumerated().map { ($0.element.id, $0.offset) })
 
-        ModalOverlayContainer(width: 480, topPadding: 56, cornerRadius: 14, backdropOpacity: 0.22, onDismiss: onDismiss) {
+        ModalOverlayContainer(width: 480, topPadding: 56, cornerRadius: 14, backdropOpacity: 0.22, showsBackdrop: false, onDismiss: onDismiss) {
             VStack(spacing: 0) {
                 ShelfSearchBar(
                     placeholder: language.tr("快速切换分类、查找作品或搜索标签…", "Quickly switch lists, find items, or search tags…"),
@@ -137,7 +137,7 @@ struct QuickFindOverlay: View {
                     alwaysShowTrailingHint: true
                 )
 
-                Divider()
+                ShelfHairline()
 
                 if flatEntries.isEmpty {
                     Text(language.tr("无匹配结果", "No Matching Results"))
@@ -185,25 +185,17 @@ struct QuickFindOverlay: View {
                     }
                 }
 
-                Divider()
+                ShelfHairline()
 
                 HStack(spacing: 12) {
-                    Text(
-                        language.tr(
-                            "↑↓ 选择  ·  ↵ 筛选/跳转  ·  ⌘↵ / ⌘点击 叠加多标签  ·  Esc 关闭",
-                            "↑↓ Select  ·  ↵ Filter/Open  ·  ⌘↵ / ⌘-Click Multi-tag  ·  Esc Close"
-                        )
-                    )
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
+                    quickFindHint("↑↓", language.tr("选择", "Select"))
+                    quickFindHint("↵", language.tr("打开", "Open"))
+                    quickFindHint("⌘↵", language.tr("多选标签", "Multi-tag"))
                     Spacer()
                 }
                 .padding(.horizontal, 14)
-                .padding(.vertical, 7)
+                .padding(.vertical, 7.5)
             }
-            .background(Color(nsColor: .windowBackgroundColor))
         }
         .task(id: request) {
             guard let request else {
@@ -212,6 +204,20 @@ struct QuickFindOverlay: View {
             }
             guard let items = await store.backgroundQuickFind(for: request), !Task.isCancelled else { return }
             preparedItems = (request, items)
+        }
+    }
+
+    private func quickFindHint(_ key: String, _ label: String) -> some View {
+        HStack(spacing: 4) {
+            Text(key)
+                .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1.5)
+                .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            Text(label)
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary.opacity(0.85))
         }
     }
 
@@ -237,6 +243,8 @@ struct QuickFindOverlay: View {
                 .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .buttonStyle(.plain)
+        .animation(.easeOut(duration: 0.10), value: isHighlighted)
+        .animation(.easeOut(duration: 0.10), value: isHovered)
         .onHover { hovering in
             hoveredID = hovering ? entry.id : (hoveredID == entry.id ? nil : hoveredID)
         }

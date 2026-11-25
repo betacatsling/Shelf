@@ -6,6 +6,7 @@ import QuartzCore
 @MainActor
 final class PosterCardInteractiveView: NSView {
     private static let reflowAnimationKey = "drawerReflow"
+    private static let artworkFadeKey = "artworkFade"
     private let posterTransformView = NSView()
     private let shadowLayer = CALayer()
     private let artworkLayer = CALayer()
@@ -33,7 +34,16 @@ final class PosterCardInteractiveView: NSView {
     private var lastPosterSize: CGSize = .zero
     private var placeholderDisplayed = false
     private var neededVisualReset = false
-    private static let stars = (0...5).map { String(repeating: "★", count: $0) }
+    private static let starStrings: [NSAttributedString] = (0...5).map { count in
+        NSAttributedString(
+            string: String(repeating: "★", count: count),
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 9.5, weight: .regular),
+                .foregroundColor: ShelfTheme.starGoldNS,
+                .kern: 1.3
+            ]
+        )
+    }
 
     override var isFlipped: Bool { true }
 
@@ -66,9 +76,15 @@ final class PosterCardInteractiveView: NSView {
         guard let rootPosterLayer = posterTransformView.layer else { return }
 
         shadowLayer.shadowColor = NSColor.black.cgColor
-        shadowLayer.shadowOpacity = 0.25
+        shadowLayer.shadowOpacity = 0.24
         shadowLayer.shadowRadius = 7.5
         shadowLayer.shadowOffset = CGSize(width: 0, height: 4)
+        shadowLayer.actions = [
+            "shadowOpacity": NSNull(),
+            "shadowRadius": NSNull(),
+            "shadowOffset": NSNull(),
+            "shadowColor": NSNull()
+        ]
         rootPosterLayer.addSublayer(shadowLayer)
 
         artworkLayer.cornerRadius = 10
@@ -144,16 +160,33 @@ final class PosterCardInteractiveView: NSView {
         neededVisualReset = isHovered || isPressed
         isHovered = false
         isPressed = false
+        badge?.layer?.removeAnimation(forKey: "opacity")
+        badge?.layer?.opacity = 0
+        badge?.isHidden = true
         dropOverlay?.isHidden = true
     }
 
-    func animateReflow(horizontalOffset: CGFloat) {
+    func animateReflow(fromOffset offset: CGPoint) {
         guard let layer else { return }
-        let duration = 0.16
+        let startTransform: CATransform3D
+        if layer.animation(forKey: Self.reflowAnimationKey) != nil,
+           let current = layer.presentation()?.transform {
+            startTransform = CATransform3DTranslate(current, offset.x, offset.y, 0)
+        } else {
+            startTransform = CATransform3DMakeTranslation(offset.x, offset.y, 0)
+        }
+        let spring = ShelfMotion.gridReflow(keyPath: "transform")
+        spring.fromValue = NSValue(caTransform3D: startTransform)
+        spring.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+        layer.add(spring, forKey: Self.reflowAnimationKey)
+    }
+
+    func animateReflowEntrance(horizontalOffset: CGFloat) {
+        guard let layer else { return }
+        let duration: CFTimeInterval = 0.22
         let fade = CABasicAnimation(keyPath: "opacity")
-        let currentOpacity = layer.animation(forKey: Self.reflowAnimationKey) != nil ? layer.presentation()?.opacity : nil
-        fade.fromValue = currentOpacity ?? 0.66
-        fade.toValue = 1
+        fade.fromValue = 0.0
+        fade.toValue = 1.0
         fade.duration = duration
 
         let slide = CABasicAnimation(keyPath: "transform.translation.x")
@@ -162,11 +195,11 @@ final class PosterCardInteractiveView: NSView {
         slide.toValue = 0
         slide.duration = duration
 
-        let animation = CAAnimationGroup()
-        animation.animations = [fade, slide]
-        animation.duration = duration
-        animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        layer.add(animation, forKey: Self.reflowAnimationKey)
+        let group = CAAnimationGroup()
+        group.animations = [fade, slide]
+        group.duration = duration
+        group.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+        layer.add(group, forKey: Self.reflowAnimationKey)
     }
 
     func cancelReflowAnimation() {
@@ -195,7 +228,7 @@ final class PosterCardInteractiveView: NSView {
             }
             if previous?.rating != item.rating {
                 let clampedRating = min(max(item.rating, 0), 5)
-                starsLabel.stringValue = Self.stars[clampedRating]
+                starsLabel.attributedStringValue = Self.starStrings[clampedRating]
                 starsLabel.isHidden = clampedRating == 0
             }
             if previous?.category != item.category || previous?.status != item.status || oldLanguage != language {
@@ -227,7 +260,8 @@ final class PosterCardInteractiveView: NSView {
 
     private func suspendArtwork() {
         cancelPendingArtwork()
-        showArtwork(nil)
+        artworkLayer.removeAnimation(forKey: Self.artworkFadeKey)
+        showArtwork(nil, animated: false)
         artworkRequested = false
         placeholderDisplayed = false
     }
@@ -246,26 +280,34 @@ final class PosterCardInteractiveView: NSView {
         let request = item.artworkRequest(language: language)
         if let artwork = manager.cachedArtwork(for: request) {
             placeholderDisplayed = request.fileName == nil
-            showArtwork(artwork)
+            showArtwork(artwork, animated: false)
             return
         }
         artworkTask = Task { [weak self] in
             let decoded = await manager.artwork(for: request)
             guard !Task.isCancelled else { return }
+            let shouldFade = self?.coordinator?.reduceMotion != true && self?.window != nil
             if let decoded {
                 self?.placeholderDisplayed = request.fileName == nil
-                self?.showArtwork(decoded)
+                self?.showArtwork(decoded, animated: shouldFade)
             } else if request.fileName != nil, let self {
                 let image = await manager.artwork(for: item.placeholderRequest(language: self.language))
                 guard !Task.isCancelled else { return }
                 self.placeholderDisplayed = true
-                self.showArtwork(image)
+                self.showArtwork(image, animated: shouldFade)
             }
             self?.artworkTask = nil
         }
     }
 
-    private func showArtwork(_ artwork: CoverManager.Artwork?) {
+    private func showArtwork(_ artwork: CoverManager.Artwork?, animated: Bool) {
+        if animated && artwork != nil {
+            let fade = CATransition()
+            fade.type = .fade
+            fade.duration = 0.16
+            fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            artworkLayer.add(fade, forKey: Self.artworkFadeKey)
+        }
         artworkLayer.contents = artwork?.contents
     }
 
@@ -274,7 +316,7 @@ final class PosterCardInteractiveView: NSView {
         isCardSelected = selected
         setAccessibilitySelected(selected)
         updateTitleStyle()
-        refreshVisualState(animated: false)
+        refreshVisualState(animated: window != nil && coordinator?.reduceMotion != true)
     }
 
     func setHovered(_ hovered: Bool, animated: Bool) {
@@ -286,16 +328,35 @@ final class PosterCardInteractiveView: NSView {
 
     private func refreshVisualState(animated: Bool) {
         let moves = coordinator?.reduceMotion != true && coordinator?.isLiveScrolling != true
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            updateStatusBadge()
+            updateStatusBadge(animated: animated && moves)
 
+            let restingBorder = isDark
+                ? NSColor.white.withAlphaComponent(0.14).cgColor
+                : NSColor.black.withAlphaComponent(0.09).cgColor
+            let hoveredBorder = isDark
+                ? NSColor.white.withAlphaComponent(0.36).cgColor
+                : NSColor.black.withAlphaComponent(0.22).cgColor
             let borderCol: CGColor = isCardSelected
                 ? NSColor.controlAccentColor.cgColor
-                : NSColor.white.withAlphaComponent(isHovered ? 0.36 : 0.16).cgColor
-            let borderW: CGFloat = isCardSelected ? 2.5 : (isHovered ? 1.2 : 0.75)
+                : (isHovered ? hoveredBorder : restingBorder)
+            let borderW: CGFloat = isCardSelected ? 2.2 : (isHovered ? 1.1 : 0.75)
 
-            let scale: CGFloat = moves ? (isPressed ? 0.976 : (isHovered ? 1.024 : 1.0)) : 1
-            let liftY: CGFloat = moves && isHovered && !isPressed ? -2 : 0
+            let scale: CGFloat = moves ? (isPressed ? 0.974 : (isHovered ? 1.028 : 1.0)) : 1
+            let liftY: CGFloat = moves && isHovered && !isPressed ? -3 : 0
+
+            let targetShadowOpacity: Float = {
+                if isPressed { return isDark ? 0.22 : 0.10 }
+                if isHovered { return isDark ? 0.48 : 0.24 }
+                if isCardSelected { return isDark ? 0.36 : 0.20 }
+                return isDark ? 0.32 : 0.15
+            }()
+            let targetShadowRadius: CGFloat = isPressed ? 4 : (isHovered ? 15 : (isCardSelected ? 10 : 7.5))
+            let targetShadowOffset = CGSize(width: 0, height: isPressed ? 2 : (isHovered ? 8.5 : 4))
+            let targetShadowColor: CGColor = isCardSelected && !isHovered
+                ? NSColor.controlAccentColor.withAlphaComponent(isDark ? 0.48 : 0.35).cgColor
+                : NSColor.black.cgColor
 
             let w = max(1, posterTransformView.bounds.width)
             let h = max(1, posterTransformView.bounds.height)
@@ -308,20 +369,21 @@ final class PosterCardInteractiveView: NSView {
 
             CATransaction.begin()
             if animated && moves {
-                CATransaction.setAnimationDuration(0.12)
-                CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+                CATransaction.setAnimationDuration(isPressed ? 0.10 : 0.18)
+                CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0))
             } else {
                 CATransaction.setDisableActions(true)
                 posterTransformView.layer?.removeAnimation(forKey: "transform")
                 hoverSheenLayer?.removeAnimation(forKey: "opacity")
                 borderLayer.removeAllAnimations()
+                shadowLayer.removeAllAnimations()
             }
             borderLayer.borderColor = borderCol
             borderLayer.borderWidth = borderW
             if isHovered, hoverSheenLayer == nil {
                 let sheen = CAGradientLayer()
-                sheen.colors = [NSColor.white.withAlphaComponent(0.15).cgColor,
-                                NSColor.white.withAlphaComponent(0.02).cgColor, NSColor.clear.cgColor]
+                sheen.colors = [NSColor.white.withAlphaComponent(0.16).cgColor,
+                                NSColor.white.withAlphaComponent(0.025).cgColor, NSColor.clear.cgColor]
                 sheen.startPoint = .zero
                 sheen.endPoint = CGPoint(x: 1, y: 1)
                 sheen.frame = artworkLayer.bounds
@@ -329,6 +391,18 @@ final class PosterCardInteractiveView: NSView {
                 hoverSheenLayer = sheen
             }
             hoverSheenLayer?.opacity = isHovered ? 1 : 0
+
+            animateShadowProperty("shadowOpacity", from: shadowLayer.presentation()?.shadowOpacity ?? shadowLayer.shadowOpacity,
+                                  to: targetShadowOpacity, animated: animated && moves)
+            animateShadowProperty("shadowRadius", from: shadowLayer.presentation()?.shadowRadius ?? shadowLayer.shadowRadius,
+                                  to: targetShadowRadius, animated: animated && moves)
+            animateShadowProperty("shadowOffset", from: NSValue(size: shadowLayer.presentation()?.shadowOffset ?? shadowLayer.shadowOffset),
+                                  to: NSValue(size: targetShadowOffset), animated: animated && moves)
+            shadowLayer.shadowOpacity = targetShadowOpacity
+            shadowLayer.shadowRadius = targetShadowRadius
+            shadowLayer.shadowOffset = targetShadowOffset
+            shadowLayer.shadowColor = targetShadowColor
+
             if let posterLayer = posterTransformView.layer, !CATransform3DEqualToTransform(posterLayer.transform, t) {
                 let current = (posterLayer.animation(forKey: "transform") != nil
                                ? posterLayer.presentation()?.transform : nil) ?? posterLayer.transform
@@ -336,18 +410,31 @@ final class PosterCardInteractiveView: NSView {
                 CATransaction.setDisableActions(true)
                 posterLayer.transform = t
                 if animated && moves && !CATransform3DEqualToTransform(current, t) {
-                    let transition = CABasicAnimation(keyPath: "transform")
-                    transition.fromValue = NSValue(caTransform3D: current)
-                    transition.toValue = NSValue(caTransform3D: t)
-                    transition.duration = 0.12
-                    transition.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                    posterLayer.add(transition, forKey: "transform")
+                    let spring = isPressed
+                        ? ShelfMotion.cardPress(keyPath: "transform")
+                        : ShelfMotion.cardHover(keyPath: "transform")
+                    spring.fromValue = NSValue(caTransform3D: current)
+                    spring.toValue = NSValue(caTransform3D: t)
+                    posterLayer.add(spring, forKey: "transform")
                 }
                 CATransaction.commit()
             }
             layer?.zPosition = isHovered ? 20 : (isCardSelected ? 5 : 0)
             CATransaction.commit()
         }
+    }
+
+    private func animateShadowProperty(_ keyPath: String, from: Any, to: Any, animated: Bool) {
+        guard animated else {
+            shadowLayer.removeAnimation(forKey: keyPath)
+            return
+        }
+        let anim = CABasicAnimation(keyPath: keyPath)
+        anim.fromValue = from
+        anim.toValue = to
+        anim.duration = isPressed ? 0.11 : 0.20
+        anim.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+        shadowLayer.add(anim, forKey: keyPath)
     }
 
     private func updateTitleStyle() {
@@ -358,16 +445,42 @@ final class PosterCardInteractiveView: NSView {
         }
     }
 
-    private func updateStatusBadge() {
-        guard let item, showStatusBadge || isHovered else {
+    private func updateStatusBadge(animated: Bool = false) {
+        let visible = item != nil && (showStatusBadge || isHovered)
+        guard let item else {
             badge?.isHidden = true
             return
         }
+        if !visible {
+            guard let badge else { return }
+            if animated, let badgeLayer = badge.layer {
+                let currentOpacity = badgeLayer.presentation()?.opacity ?? badgeLayer.opacity
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                badgeLayer.opacity = 0
+                if currentOpacity > 0.01 {
+                    let anim = CABasicAnimation(keyPath: "opacity")
+                    anim.fromValue = currentOpacity
+                    anim.toValue = 0
+                    anim.duration = 0.14
+                    anim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    badgeLayer.add(anim, forKey: "opacity")
+                }
+                CATransaction.commit()
+            } else {
+                badge.layer?.removeAnimation(forKey: "opacity")
+                badge.layer?.opacity = 0
+                badge.isHidden = true
+            }
+            return
+        }
+
         let badge: PosterStatusBadge
         if let existing = self.badge {
             badge = existing
         } else {
             badge = PosterStatusBadge()
+            badge.layer?.opacity = 0
             if let dropOverlay {
                 posterTransformView.addSubview(badge, positioned: .below, relativeTo: dropOverlay)
             } else {
@@ -375,11 +488,29 @@ final class PosterCardInteractiveView: NSView {
             }
             self.badge = badge
         }
-        let wasHidden = badge.isHidden
+        let wasHidden = badge.isHidden || (badge.layer?.opacity ?? 1) < 0.05
         badge.isHidden = false
         let oldWidth = badge.pillWidth
         badge.configure(text: item.category.statusLabel(for: item.status, in: language), status: item.status)
         if wasHidden || oldWidth != badge.pillWidth { needsLayout = true }
+
+        if let badgeLayer = badge.layer {
+            let currentOpacity = badgeLayer.presentation()?.opacity ?? badgeLayer.opacity
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            badgeLayer.opacity = 1
+            if animated && currentOpacity < 0.99 {
+                let anim = CABasicAnimation(keyPath: "opacity")
+                anim.fromValue = currentOpacity
+                anim.toValue = 1
+                anim.duration = 0.16
+                anim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                badgeLayer.add(anim, forKey: "opacity")
+            } else if !animated {
+                badgeLayer.removeAnimation(forKey: "opacity")
+            }
+            CATransaction.commit()
+        }
     }
 
     override func layout() {

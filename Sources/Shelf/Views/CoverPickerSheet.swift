@@ -29,16 +29,16 @@ struct CoverPickerSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             headerBar
-            Divider()
+            ShelfHairline()
 
             HStack(alignment: .top, spacing: 0) {
                 leftManualPanel.frame(width: 236)
-                Divider()
+                ShelfHairline(vertical: true)
                 rightOnlineSearchPanel.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(height: 468)
 
-            Divider()
+            ShelfHairline()
 
             SheetFooterBar(
                 errorMessage: coverController.errorMessage,
@@ -441,13 +441,14 @@ private struct CoverCandidateCard: View {
         Button(action: onSelect) {
             VStack(spacing: 6) {
                 ZStack(alignment: .topTrailing) {
-                    Color.black.opacity(0.25)
+                    Color.black.opacity(0.22)
                         .aspectRatio(2.0 / 3.0, contentMode: .fit)
                         .overlay {
                             if let loadedImage {
                                 Image(decorative: loadedImage, scale: 2)
                                     .resizable()
                                     .scaledToFill()
+                                    .transition(.opacity)
                             } else if loadFailed {
                                 VStack(spacing: 4) {
                                     Image(systemName: "photo").font(.system(size: 18))
@@ -458,26 +459,46 @@ private struct CoverCandidateCard: View {
                                 ProgressView().controlSize(.small)
                             }
                         }
+                        .animation(reduceMotion ? nil : ShelfMotion.gentle, value: loadedImage != nil)
                         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 9, style: .continuous)
                                 .strokeBorder(
                                     isSelected ? Color.accentColor : Color.white.opacity(isHovered ? 0.35 : 0.14),
-                                    lineWidth: isSelected ? 2.5 : 0.8
+                                    lineWidth: isSelected ? 2.2 : 0.8
                                 )
                         )
-                        .shadow(color: .black.opacity(0.20), radius: 5, x: 0, y: 3)
+                        .shadow(
+                            color: isSelected
+                                ? Color.accentColor.opacity(0.28)
+                                : .black.opacity(isHovered ? 0.32 : 0.18),
+                            radius: isHovered ? 10 : 5,
+                            x: 0,
+                            y: isHovered ? 5 : 3
+                        )
 
                     Text(candidate.sourceTag)
                         .font(.system(size: 9.5, weight: .medium))
                         .foregroundStyle(.white.opacity(0.92))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2.5)
-                        .background(Color.black.opacity(0.65), in: Capsule())
+                        .background(Color.black.opacity(0.62), in: Capsule())
                         .padding(6)
                 }
-                .scaleEffect(!reduceMotion && isHovered ? 1.02 : 1.0)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isHovered)
+                .overlay(alignment: .topLeading) {
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white, Color.accentColor)
+                            .shadow(color: .black.opacity(0.35), radius: 3, x: 0, y: 1)
+                            .padding(6)
+                            .transition(.scale(scale: 0.7).combined(with: .opacity))
+                    }
+                }
+                .scaleEffect(!reduceMotion && isHovered ? 1.028 : 1.0)
+                .offset(y: !reduceMotion && isHovered ? -2 : 0)
+                .animation(reduceMotion ? nil : ShelfMotion.micro, value: isHovered)
+                .animation(reduceMotion ? nil : ShelfMotion.micro, value: isSelected)
 
                 Text(candidate.title)
                     .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))

@@ -45,6 +45,10 @@ enum TimelineDateFormatter {
         return "\(startStr) – \(endStr)"
     }
 
+    static func shortDayText(_ date: Date, language: AppLanguage) -> String {
+        (language == .zh ? zhMD : enMD).string(from: date)
+    }
+
     static func durationText(days: Int, isOngoing: Bool, language: AppLanguage) -> String {
         if isOngoing {
             return language.tr("第 \(days) 天", "Day \(days)")
@@ -56,22 +60,91 @@ enum TimelineDateFormatter {
     }
 }
 
+@MainActor @Observable
+final class TimelineHoverState {
+    struct Target: Equatable {
+        let entry: TimelineEntry
+        let rect: CGRect
+    }
+
+    private(set) var target: Target?
+
+    func enter(_ entry: TimelineEntry, rect: CGRect) {
+        target = Target(entry: entry, rect: rect)
+    }
+
+    func leave(_ id: UUID) {
+        if target?.entry.id == id { clear() }
+    }
+
+    func clear() {
+        if target != nil { target = nil }
+    }
+}
+
+struct TimelinePreviewOverlay: View {
+    let hover: TimelineHoverState
+    let containerSize: CGSize
+    let language: AppLanguage
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var presented: TimelineHoverState.Target?
+
+    var body: some View {
+        ZStack {
+            if let presented {
+                let card = TimelineHoverPreviewCard(entry: presented.entry, anchorRect: presented.rect,
+                                                    containerSize: containerSize, language: language)
+                let towardCard: CGFloat = card.clampedCenter.y < presented.rect.midY ? 6 : -6
+                card
+                    .position(card.clampedCenter)
+                    .id(presented.entry.id)
+                    .transition(reduceMotion ? .opacity : .asymmetric(
+                        insertion: .scale(scale: 0.96)
+                            .combined(with: .offset(y: towardCard))
+                            .combined(with: .opacity),
+                        removal: .opacity.combined(with: .scale(scale: 0.98))
+                    ))
+            }
+        }
+        .accessibilityHidden(true)
+        .task(id: hover.target) {
+            let candidate = hover.target
+            let wasShowing = presented != nil
+            guard let candidate else {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { presented = nil }
+                return
+            }
+            if !wasShowing {
+                do { try await Task.sleep(for: .milliseconds(210)) } catch { return }
+            } else {
+                // Quick handoff when gliding directly from one timeline card to another.
+                do { try await Task.sleep(for: .milliseconds(65)) } catch { return }
+            }
+            guard !Task.isCancelled, hover.target == candidate else { return }
+            withAnimation(reduceMotion ? nil : ShelfMotion.panel) { presented = candidate }
+        }
+    }
+}
+
 struct TimelineHoverPreviewCard: View {
     let entry: TimelineEntry
     let anchorRect: CGRect
     let containerSize: CGSize
     let language: AppLanguage
 
+    @Environment(\.colorScheme) private var colorScheme
+
     private let posterWidth: CGFloat = 176
     private let posterHeight: CGFloat = 264
     private let cardPadding: CGFloat = 10
-    private let estimatedCardHeight: CGFloat = 342
+    private let estimatedCardHeight: CGFloat = 344
     private let edgePadding: CGFloat = 16
     private let verticalGap: CGFloat = 10
 
     private var cardWidth: CGFloat { posterWidth + cardPadding * 2 }
 
-    private var clampedCenter: CGPoint {
+    fileprivate var clampedCenter: CGPoint {
         // Anchor horizontally near the card's leading poster (slightly offset right)
         let targetX = anchorRect.minX + min(anchorRect.width * 0.5, 96)
         let halfW = cardWidth / 2
@@ -99,6 +172,7 @@ struct TimelineHoverPreviewCard: View {
     var body: some View {
         let poster = entry.poster
         let statusTint = poster.status.tintColor
+        let isDark = colorScheme == .dark
 
         CoverPreview(fileName: poster.coverFileName) { artwork in
             VStack(alignment: .leading, spacing: 9) {
@@ -110,11 +184,11 @@ struct TimelineHoverPreviewCard: View {
                         image: artwork?.image,
                         paletteSeed: poster.paletteSeed,
                         language: language,
-                        cornerRadius: 11,
+                        cornerRadius: 10.5,
                         isHovered: true
                     )
                     .frame(width: posterWidth, height: posterHeight)
-                    .shadow(color: .black.opacity(0.38), radius: 14, x: 0, y: 8)
+                    .shadow(color: .black.opacity(isDark ? 0.42 : 0.20), radius: 12, x: 0, y: 6)
 
                     // Minimal translucent status dot pill
                     HStack(spacing: 4) {
@@ -127,7 +201,7 @@ struct TimelineHoverPreviewCard: View {
                     }
                     .padding(.horizontal, 7.5)
                     .padding(.vertical, 3.5)
-                    .background(.black.opacity(0.62), in: Capsule())
+                    .background(.black.opacity(0.64), in: Capsule())
                     .overlay(
                         Capsule()
                             .strokeBorder(.white.opacity(0.20), lineWidth: 0.6)
@@ -135,7 +209,7 @@ struct TimelineHoverPreviewCard: View {
                     .padding(8)
                 }
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 4.5) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(poster.title)
                             .font(.system(size: 13.5, weight: .bold))
@@ -153,6 +227,7 @@ struct TimelineHoverPreviewCard: View {
                                     .font(.system(size: 11, weight: .bold, design: .rounded))
                                     .foregroundStyle(.secondary)
                             }
+                            .fixedSize()
                         }
                     }
 
@@ -181,10 +256,12 @@ struct TimelineHoverPreviewCard: View {
                             )
                         )
                         .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
                         .foregroundStyle(statusTint)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1.5)
-                        .background(statusTint.opacity(0.15), in: Capsule())
+                        .background(statusTint.opacity(0.14), in: Capsule())
+                        .fixedSize()
                     }
                 }
                 .padding(.horizontal, 2)
@@ -193,34 +270,36 @@ struct TimelineHoverPreviewCard: View {
             .frame(width: cardWidth)
             .background {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(.ultraThickMaterial)
                     if let backdrop = artwork?.backdrop {
                         Image(decorative: backdrop, scale: 1)
                             .resizable()
                             .scaledToFill()
-                            .opacity(0.24)
-                            .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+                            .opacity(isDark ? 0.24 : 0.12)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     } else {
-                        RoundedRectangle(cornerRadius: 17, style: .continuous)
-                            .fill(poster.category.accentColor.opacity(0.08))
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(poster.category.accentColor.opacity(isDark ? 0.08 : 0.05))
                     }
                 }
             }
             .overlay(
-                RoundedRectangle(cornerRadius: 17, style: .continuous)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(
                         LinearGradient(
-                            colors: [Color.white.opacity(0.32), Color.primary.opacity(0.10)],
+                            colors: [
+                                Color.white.opacity(isDark ? 0.28 : 0.65),
+                                Color.primary.opacity(isDark ? 0.10 : 0.12)
+                            ],
                             startPoint: .top,
                             endPoint: .bottom
                         ),
-                        lineWidth: 0.9
+                        lineWidth: 0.85
                     )
             )
-            .shadow(color: .black.opacity(0.34), radius: 28, x: 0, y: 14)
+            .shadow(color: .black.opacity(isDark ? 0.42 : 0.16), radius: 24, x: 0, y: 12)
         }
-        .position(clampedCenter)
         .allowsHitTesting(false)
     }
 }

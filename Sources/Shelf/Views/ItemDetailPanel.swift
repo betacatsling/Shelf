@@ -9,12 +9,17 @@ struct ItemDetailPanel: View {
     let onClose: () -> Void
 
     @Environment(LibraryStore.self) private var store
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var statusNamespace
     @State private var draftNotes: String
     @State private var isPosterHovered = false
     @State private var isTitleHovered = false
     @State private var isCategoryHovered = false
     @State private var isSubtagHovered = false
+    @State private var hoveredTagPill: String? = nil
+    @State private var hoveredStatus: TrackingStatus? = nil
+    @State private var hoveredCategoryOption: MediaCategory? = nil
     @State private var isDeleteHovered = false
     @State private var isDropTargeted = false
     @State private var showDeleteConfirm = false
@@ -54,13 +59,12 @@ struct ItemDetailPanel: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 20) {
+            LazyVStack(alignment: .leading, spacing: 16) {
                 CoverPreview(fileName: item.coverFileName) { artwork in
                     heroHeader(artwork)
                 }
                 statusSwitcherSection.padding(.horizontal, 20)
-                ratingSection.padding(.horizontal, 20)
-                timelineSection.padding(.horizontal, 20)
+                metadataCardSection.padding(.horizontal, 20)
                 notesSection.padding(.horizontal, 20)
                 metadataFooter.padding(.horizontal, 20)
             }
@@ -135,10 +139,11 @@ struct ItemDetailPanel: View {
                 }
 
                 LinearGradient(
-                    colors: [
-                        Color.clear,
-                        Color(nsColor: .windowBackgroundColor).opacity(0.75),
-                        Color(nsColor: .windowBackgroundColor)
+                    stops: [
+                        .init(color: Color.clear, location: 0.0),
+                        .init(color: Color(nsColor: .windowBackgroundColor).opacity(0.45), location: 0.55),
+                        .init(color: Color(nsColor: .windowBackgroundColor).opacity(0.88), location: 0.82),
+                        .init(color: Color(nsColor: .windowBackgroundColor), location: 1.0)
                     ],
                     startPoint: .top,
                     endPoint: .bottom
@@ -153,7 +158,12 @@ struct ItemDetailPanel: View {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(Color.black)
                         .frame(width: 132, height: 198)
-                        .shadow(color: .black.opacity(0.30), radius: 12, x: 0, y: 6)
+                        .shadow(
+                            color: .black.opacity(isPosterHovered ? 0.38 : 0.26),
+                            radius: isPosterHovered ? 16 : 11,
+                            x: 0,
+                            y: isPosterHovered ? 9 : 6
+                        )
 
                     CoverArtworkView(
                         title: shownTitle,
@@ -172,13 +182,14 @@ struct ItemDetailPanel: View {
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(.white)
                             .frame(width: 26, height: 26)
-                            .background(Color.black.opacity(0.65), in: Circle())
+                            .background(.ultraThinMaterial, in: Circle())
+                            .background(Color.black.opacity(0.42), in: Circle())
                             .overlay(
                                 Circle()
-                                    .strokeBorder(Color.white.opacity(0.25), lineWidth: 0.7)
+                                    .strokeBorder(Color.white.opacity(0.28), lineWidth: 0.7)
                             )
                             .padding(7)
-                            .transition(.opacity)
+                            .transition(.scale(scale: 0.85).combined(with: .opacity))
                             .allowsHitTesting(false)
                     }
 
@@ -198,9 +209,12 @@ struct ItemDetailPanel: View {
                                     .padding(.vertical, 5)
                                     .background(Color.black.opacity(0.75), in: Capsule())
                             )
+                            .transition(.opacity)
                     }
                 }
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: isPosterHovered)
+                .scaleEffect(!reduceMotion && isPosterHovered ? 1.02 : 1.0)
+                .animation(reduceMotion ? nil : ShelfMotion.micro, value: isPosterHovered)
+                .animation(reduceMotion ? nil : ShelfMotion.micro, value: isDropTargeted)
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .onTapGesture(perform: onReplaceCover)
                 .onHover { isPosterHovered = $0 }
@@ -245,6 +259,7 @@ struct ItemDetailPanel: View {
                         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                     }
                     .buttonStyle(.plain)
+                    .animation(reduceMotion ? nil : ShelfMotion.micro, value: isTitleHovered)
                     .padding(.horizontal, 12)
                     .onHover { isTitleHovered = $0 }
                     .help(lang.tr("点击修改中英文名称", "Click to edit titles"))
@@ -263,12 +278,13 @@ struct ItemDetailPanel: View {
                                 .padding(.horizontal, 9)
                                 .padding(.vertical, 3.5)
                                 .background(
-                                    item.category.accentColor.opacity(isCategoryHovered ? 0.22 : 0.14),
+                                    item.category.accentColor.opacity(isCategoryHovered ? 0.22 : 0.13),
                                     in: Capsule()
                                 )
                                 .contentShape(Capsule())
                         }
                         .buttonStyle(.plain)
+                        .animation(reduceMotion ? nil : ShelfMotion.micro, value: isCategoryHovered)
                         .onHover { isCategoryHovered = $0 }
                         .help(lang.tr("点击切换分类", "Click to change category"))
                         .popover(isPresented: $showCategoryPopover, arrowEdge: .bottom) {
@@ -281,16 +297,17 @@ struct ItemDetailPanel: View {
                             } label: {
                                 Label(lang.tr("添加标签", "Add Tags"), systemImage: "tag")
                                     .font(.system(size: 10.5, weight: .medium))
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(isSubtagHovered ? .secondary : .tertiary)
                                     .padding(.horizontal, 9)
                                     .padding(.vertical, 3.5)
                                     .background(
-                                        Color.primary.opacity(isSubtagHovered ? 0.12 : 0.045),
+                                        Color.primary.opacity(isSubtagHovered ? 0.10 : 0.045),
                                         in: Capsule()
                                     )
                                     .contentShape(Capsule())
                             }
                             .buttonStyle(.plain)
+                            .animation(reduceMotion ? nil : ShelfMotion.micro, value: isSubtagHovered)
                             .onHover { isSubtagHovered = $0 }
                             .help(lang.tr("设置标签 (⇧⌘T)", "Edit tags (⇧⌘T)"))
                             .popover(isPresented: $showSubtagPopover, arrowEdge: .bottom) {
@@ -299,22 +316,27 @@ struct ItemDetailPanel: View {
                         } else {
                             ForEach(item.tags, id: \.self) { tag in
                                 let localized = MediaCategory.localizedTag(tag, in: lang)
+                                let tagHovered = hoveredTagPill == tag
                                 Button {
                                     showSubtagPopover = true
                                 } label: {
                                     Text(localized)
                                         .font(.system(size: 11, weight: .medium))
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(tagHovered ? .primary : .secondary)
                                         .lineLimit(1)
                                         .padding(.horizontal, 9)
                                         .padding(.vertical, 3.5)
                                         .background(
-                                            Color.primary.opacity(0.08),
+                                            Color.primary.opacity(tagHovered ? 0.12 : 0.07),
                                             in: Capsule()
                                         )
                                         .contentShape(Capsule())
                                 }
                                 .buttonStyle(.plain)
+                                .animation(reduceMotion ? nil : ShelfMotion.micro, value: tagHovered)
+                                .onHover { inside in
+                                    hoveredTagPill = inside ? tag : (hoveredTagPill == tag ? nil : hoveredTagPill)
+                                }
                                 .help(lang.tr("点击编辑标签 (⇧⌘T) · 右键更多操作", "Click to edit tags (⇧⌘T) · Right-click for more"))
                                 .contextMenu {
                                     Button {
@@ -345,10 +367,10 @@ struct ItemDetailPanel: View {
                             Button {
                                 showSubtagPopover = true
                             } label: {
-                                Image(systemName: "tag")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 7.5)
+                                Image(systemName: "plus")
+                                    .font(.system(size: 9.5, weight: .bold))
+                                    .foregroundStyle(isSubtagHovered ? .primary : .secondary)
+                                    .padding(.horizontal, 7)
                                     .padding(.vertical, 4)
                                     .background(
                                         Color.primary.opacity(isSubtagHovered ? 0.12 : 0.05),
@@ -357,6 +379,7 @@ struct ItemDetailPanel: View {
                                     .contentShape(Capsule())
                             }
                             .buttonStyle(.plain)
+                            .animation(reduceMotion ? nil : ShelfMotion.micro, value: isSubtagHovered)
                             .onHover { isSubtagHovered = $0 }
                             .help(lang.tr("设置标签 (⇧⌘T)", "Edit tags (⇧⌘T)"))
                             .popover(isPresented: $showSubtagPopover, arrowEdge: .bottom) {
@@ -372,9 +395,10 @@ struct ItemDetailPanel: View {
 
             ShelfIconButton(
                 systemName: "xmark",
-                size: 28,
-                iconSize: 11,
+                size: 27,
+                iconSize: 10.5,
                 helpText: lang.tr("收起详情栏 (Esc)", "Hide Details (Esc)"),
+                usesMaterial: true,
                 action: onClose
             )
             .padding(12)
@@ -436,9 +460,10 @@ struct ItemDetailPanel: View {
     }
 
     private var categoryPickerPopover: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             ForEach(MediaCategory.allCases) { cat in
                 let selected = (item.category == cat)
+                let hovered = hoveredCategoryOption == cat
                 Button {
                     applyCategoryChange(cat)
                     showCategoryPopover = false
@@ -461,11 +486,15 @@ struct ItemDetailPanel: View {
                     .padding(.vertical, 6)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(selected ? Color.accentColor : Color.clear)
+                            .fill(selected ? Color.accentColor : (hovered ? Color.primary.opacity(0.07) : Color.clear))
                     )
                     .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .animation(reduceMotion ? nil : ShelfMotion.micro, value: hovered)
+                .onHover { inside in
+                    hoveredCategoryOption = inside ? cat : (hoveredCategoryOption == cat ? nil : hoveredCategoryOption)
+                }
             }
         }
         .padding(8)
@@ -509,153 +538,180 @@ struct ItemDetailPanel: View {
         store.updateItem(updated, originalCoverFileName: item.coverFileName)
     }
 
-    // MARK: - Status, Rating, Notes & Quiet Footer
+    // MARK: - Status, Unified Metadata Card, Notes & Quiet Footer
 
     private var statusSwitcherSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(lang.tr("状态", "Status"))
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(.secondary)
-
-            LazyVGrid(
-                columns: [
-                    GridItem(.flexible(), spacing: 6),
-                    GridItem(.flexible(), spacing: 6)
-                ],
-                spacing: 6
-            ) {
-                ForEach(TrackingStatus.filterOrder) { st in
-                    let isSelected = item.status == st
-                    Button {
-                        store.updateStatus(for: item.id, to: st)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(isSelected ? Color.white : st.tintColor)
-                                .frame(width: 6.5, height: 6.5)
-                            Text(item.category.statusLabel(for: st, in: lang))
-                                .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
-                                .lineLimit(1)
+        let isDark = colorScheme == .dark
+        return LazyVGrid(
+            columns: [
+                GridItem(.flexible(), spacing: 3),
+                GridItem(.flexible(), spacing: 3)
+            ],
+            spacing: 3
+        ) {
+            ForEach(TrackingStatus.filterOrder) { st in
+                let isSelected = item.status == st
+                let isHovered = hoveredStatus == st
+                Button {
+                    store.updateStatus(for: item.id, to: st)
+                } label: {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(st.tintColor)
+                            .frame(width: 6.5, height: 6.5)
+                            .opacity(isSelected ? 1.0 : (isHovered ? 0.90 : 0.72))
+                        Text(item.category.statusLabel(for: st, in: lang))
+                            .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                            .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(isHovered ? 0.90 : 0.68))
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 7)
+                    .background {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 7.5, style: .continuous)
+                                .fill(Color(nsColor: .controlBackgroundColor))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 7.5, style: .continuous)
+                                        .fill(st.tintColor.opacity(isDark ? 0.14 : 0.09))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 7.5, style: .continuous)
+                                        .strokeBorder(st.tintColor.opacity(isDark ? 0.42 : 0.34), lineWidth: 0.8)
+                                )
+                                .shadow(color: .black.opacity(isDark ? 0.24 : 0.07), radius: 2.5, x: 0, y: 1)
+                                .matchedGeometryEffect(id: "detailStatus", in: statusNamespace)
+                        } else if isHovered {
+                            RoundedRectangle(cornerRadius: 7.5, style: .continuous)
+                                .fill(Color.primary.opacity(isDark ? 0.065 : 0.045))
                         }
                     }
-                    .buttonStyle(
-                        ShelfButtonStyle(
-                            variant: isSelected ? .primary : .secondary,
-                            horizontalPadding: 10,
-                            verticalPadding: 7,
-                            cornerRadius: 8,
-                            fullWidth: true
-                        )
-                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 7.5, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .animation(reduceMotion ? nil : ShelfMotion.micro, value: isHovered)
+                .onHover { inside in
+                    hoveredStatus = inside ? st : (hoveredStatus == st ? nil : hoveredStatus)
                 }
             }
         }
-    }
-
-    private var ratingSection: some View {
-        HStack {
-            Text(lang.tr("评分", "Rating"))
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(.secondary)
-
-            Spacer()
-
-            StarRatingView(
-                rating: Binding(
-                    get: { item.rating },
-                    set: { store.updateRating(for: item.id, rating: $0) }
-                ),
-                starSize: 16,
-                spacing: 5,
-                interactive: true
-            )
-
-            if item.rating > 0 {
-                Text(lang == .zh ? "\(item.rating) 星" : "\(item.rating)★")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 30, alignment: .trailing)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .animation(reduceMotion ? nil : ShelfMotion.control, value: item.status)
+        .padding(3)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(isDark ? 0.07 : 0.048))
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.8)
+                .strokeBorder(Color.primary.opacity(isDark ? 0.10 : 0.075), lineWidth: 0.75)
         )
     }
 
-    private var timelineSection: some View {
+    private var metadataCardSection: some View {
+        let isDark = colorScheme == .dark
         let span = item.effectiveTimelineSpan()
 
-        return Button {
-            timelineEditingItemID = item.id
-            draftHasStartDate = item.startedAt != nil
-            draftStartDate = item.startedAt ?? item.finishedAt ?? Date()
-            draftHasFinishDate = item.finishedAt != nil
-            draftFinishDate = item.finishedAt ?? item.startedAt ?? Date()
-            showTimelinePopover = true
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "calendar")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(span != nil ? item.status.tintColor : .secondary)
-
-                Text(lang.tr("时间", "Dates"))
+        return VStack(spacing: 0) {
+            HStack {
+                Text(lang.tr("评分", "Rating"))
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(.secondary)
 
-                Spacer(minLength: 6)
+                Spacer()
 
-                if let span {
-                    let cal = TimelineLayoutModel.gregorianCalendar
-                    let sDay = cal.startOfDay(for: span.start)
-                    let eDay = cal.startOfDay(for: span.end)
-                    let days = max(1, (cal.dateComponents([.day], from: sDay, to: eDay).day ?? 0) + 1)
+                StarRatingView(
+                    rating: Binding(
+                        get: { item.rating },
+                        set: { store.updateRating(for: item.id, rating: $0) }
+                    ),
+                    starSize: 15.5,
+                    spacing: 5,
+                    interactive: true
+                )
 
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(
-                            TimelineDateFormatter.spanText(
-                                start: sDay,
-                                end: eDay,
-                                isOngoing: span.isOngoing,
-                                durationDays: days,
-                                language: lang
-                            )
-                        )
-                        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-
-                        Text(TimelineDateFormatter.durationText(days: days, isOngoing: span.isOngoing, language: lang))
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text(lang.tr("设置起止日期…", "Set dates…"))
-                        .font(.system(size: 12))
-                        .foregroundStyle(.tertiary)
+                if item.rating > 0 {
+                    Text(lang == .zh ? "\(item.rating) 星" : "\(item.rating)★")
+                        .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, alignment: .trailing)
                 }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(
-                Color.primary.opacity(isTimelineHovered ? 0.08 : 0.05),
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(isTimelineHovered ? 0.14 : 0.08), lineWidth: 0.8)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            ShelfHairline()
+                .padding(.horizontal, 12)
+
+            Button {
+                timelineEditingItemID = item.id
+                draftHasStartDate = item.startedAt != nil
+                draftStartDate = item.startedAt ?? item.finishedAt ?? Date()
+                draftHasFinishDate = item.finishedAt != nil
+                draftFinishDate = item.finishedAt ?? item.startedAt ?? Date()
+                showTimelinePopover = true
+            } label: {
+                HStack(spacing: 8) {
+                    Text(lang.tr("时间", "Dates"))
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+
+                    Spacer(minLength: 6)
+
+                    if let span {
+                        let cal = TimelineLayoutModel.gregorianCalendar
+                        let sDay = cal.startOfDay(for: span.start)
+                        let eDay = cal.startOfDay(for: span.end)
+                        let days = max(1, (cal.dateComponents([.day], from: sDay, to: eDay).day ?? 0) + 1)
+
+                        VStack(alignment: .trailing, spacing: 1.5) {
+                            Text(
+                                TimelineDateFormatter.spanText(
+                                    start: sDay,
+                                    end: eDay,
+                                    isOngoing: span.isOngoing,
+                                    durationDays: days,
+                                    language: lang
+                                )
+                            )
+                            .font(.system(size: 11.5, weight: .medium, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+
+                            Text(TimelineDateFormatter.durationText(days: days, isOngoing: span.isOngoing, language: lang))
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        HStack(spacing: 4) {
+                            Image(systemName: "calendar.badge.plus")
+                                .font(.system(size: 11))
+                            Text(lang.tr("设置日期…", "Set dates…"))
+                                .font(.system(size: 11.5))
+                        }
+                        .foregroundStyle(isTimelineHovered ? .secondary : .tertiary)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color.primary.opacity(isTimelineHovered ? 0.045 : 0.0))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .animation(reduceMotion ? nil : ShelfMotion.micro, value: isTimelineHovered)
+            .onHover { isTimelineHovered = $0 }
+            .help(lang.tr("点击设置开始与结束日期（用于时间线视图）", "Click to set start and finish dates for Timeline view"))
+            .popover(isPresented: $showTimelinePopover, arrowEdge: .leading) {
+                timelineEditorPopover
+            }
         }
-        .buttonStyle(.plain)
-        .onHover { isTimelineHovered = $0 }
-        .help(lang.tr("点击设置开始与结束日期（用于时间线视图）", "Click to set start and finish dates for Timeline view"))
-        .popover(isPresented: $showTimelinePopover, arrowEdge: .leading) {
-            timelineEditorPopover
-        }
+        .background(Color.primary.opacity(isDark ? 0.05 : 0.038), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(Color.primary.opacity(isDark ? 0.09 : 0.075), lineWidth: 0.75)
+        )
     }
 
     private var timelineEditorPopover: some View {
@@ -754,6 +810,8 @@ struct ItemDetailPanel: View {
         }
         .padding(14)
         .frame(width: 256)
+        .animation(reduceMotion ? nil : ShelfMotion.control, value: draftHasStartDate)
+        .animation(reduceMotion ? nil : ShelfMotion.control, value: draftHasFinishDate)
         .onDisappear {
             commitTimelineDates()
         }
@@ -802,42 +860,47 @@ struct ItemDetailPanel: View {
         let createdStr = Self.dateFormatter.string(from: item.createdAt)
         let updatedStr = Self.dateFormatter.string(from: item.updatedAt)
 
-        return HStack(spacing: 8) {
-            Group {
-                if updatedStr != createdStr {
-                    Text(
-                        lang.tr(
-                            "记录于 \(createdStr) · 更新于 \(updatedStr)",
-                            "Added \(createdStr) · Updated \(updatedStr)"
+        return VStack(spacing: 10) {
+            ShelfHairline()
+
+            HStack(spacing: 8) {
+                Group {
+                    if updatedStr != createdStr {
+                        Text(
+                            lang.tr(
+                                "记录于 \(createdStr) · 更新于 \(updatedStr)",
+                                "Added \(createdStr) · Updated \(updatedStr)"
+                            )
                         )
-                    )
-                } else {
-                    Text(lang.tr("记录于 \(createdStr)", "Added \(createdStr)"))
+                    } else {
+                        Text(lang.tr("记录于 \(createdStr)", "Added \(createdStr)"))
+                    }
                 }
-            }
-            .font(.system(size: 11.5))
-            .foregroundStyle(.tertiary)
-            .lineLimit(1)
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
 
-            Spacer(minLength: 4)
+                Spacer(minLength: 4)
 
-            Button {
-                showDeleteConfirm = true
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(isDeleteHovered ? ShelfTheme.destructiveRed : Color.secondary.opacity(0.75))
-                    .frame(width: 28, height: 28)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(isDeleteHovered ? Color.red.opacity(0.13) : Color.clear)
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                Button {
+                    showDeleteConfirm = true
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(isDeleteHovered ? ShelfTheme.destructiveRed : Color.secondary.opacity(0.70))
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(isDeleteHovered ? Color.red.opacity(0.12) : Color.clear)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .animation(reduceMotion ? nil : ShelfMotion.micro, value: isDeleteHovered)
+                .onHover { isDeleteHovered = $0 }
+                .help(lang.tr("删除该作品", "Delete Item"))
             }
-            .buttonStyle(.plain)
-            .onHover { isDeleteHovered = $0 }
-            .help(lang.tr("删除该作品", "Delete Item"))
         }
-        .padding(.top, 2)
+        .padding(.top, 4)
     }
 }
